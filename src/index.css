@@ -1,0 +1,444 @@
+@import "tailwindcss";
+
+@theme inline {
+  /* Ivory palette */
+  --color-ivory: #F7F3EA;
+  --color-ivory-light: #FBF8F1;
+  --color-ivory-dark: #EFE9DC;
+
+  /* Gold */
+  --color-gold: #B77A22;
+  --color-gold-mid: #C88A2D;
+  --color-gold-light: #D8A24A;
+  --color-gold-pale: #F0DFB8;
+
+  /* Navy */
+  --color-navy: #071A35;
+  --color-navy-mid: #0B2342;
+  --color-navy-light: #102C4C;
+
+  /* Maroon */
+  --color-maroon: #641F2B;
+  --color-maroon-mid: #7B2635;
+
+  /* Orange */
+  --color-orange: #C96A2B;
+  --color-orange-light: #E07A35;
+
+  /* Greys */
+  --color-grey: #747474;
+  --color-grey-mid: #D9D5CD;
+  --color-grey-soft: #E7E2D9;
+
+  --color-white: #FFFFFF;
+
+  /* Fonts */
+  --font-display: "Instrument Serif", Georgia, serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-nav: "Plus Jakarta Sans", "Inter", system-ui, sans-serif;
+
+  /* Radii */
+  --radius-card: 1.25rem;
+  --radius-pill: 9999px;
+
+  /* Shadows */
+  --shadow-soft: 0 10px 30px rgba(7, 26, 53, 0.06);
+  --shadow-card: 0 4px 24px rgba(7, 26, 53, 0.08);
+  --shadow-card-hover: 0 12px 40px rgba(7, 26, 53, 0.14);
+  --shadow-gold: 0 4px 20px rgba(183, 122, 34, 0.18);
+
+  /* Transitions */
+  --ease-premium: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ──────────────────────────────────────────────
+   BASE
+────────────────────────────────────────────── */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-ivory);
+  color: var(--color-navy);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-gold) 25%, white);
+  color: var(--color-navy);
+}
+
+/* ──────────────────────────────────────────────
+   SCROLLBAR
+────────────────────────────────────────────── */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ──────────────────────────────────────────────
+   TYPOGRAPHY
+────────────────────────────────────────────── */
+.font-display { font-family: var(--font-display); }
+.font-nav { font-family: var(--font-nav); font-feature-settings: "cv02", "cv03", "cv04", "cv11"; }
+
+.text-display-hero {
+  font-family: var(--font-display);
+  font-size: clamp(2.5rem, 5vw, 4rem);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.text-display-xl {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+}
+
+.text-display-lg {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  line-height: 1.2;
+}
+
+.text-display-md {
+  font-family: var(--font-display);
+  font-size: clamp(1.375rem, 2.5vw, 1.875rem);
+  line-height: 1.25;
+}
+
+.italic-serif {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--color-gold);
+}
+
+/* ──────────────────────────────────────────────
+   JOURNEY LINE KEYFRAMES
+────────────────────────────────────────────── */
+@keyframes journey-draw {
+  from { stroke-dashoffset: 1000; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes float-pill {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes gold-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes scroll-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(5px); }
+}
+
+/* ──────────────────────────────────────────────
+   UTILITY CLASSES
+────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-grey-soft) 25%,
+    var(--color-grey-mid) 50%,
+    var(--color-grey-soft) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
+}
+
+.gold-line {
+  stroke: var(--color-gold);
+  stroke-width: 2;
+  fill: none;
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
+  animation: journey-draw 2s var(--ease-premium) forwards;
+}
+
+.floating-pill {
+  animation: float-pill 4s ease-in-out infinite;
+}
+
+/* ──────────────────────────────────────────────
+   SECTION DIVIDERS
+────────────────────────────────────────────── */
+.section-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-grey-soft) 20%,
+    var(--color-grey-mid) 50%,
+    var(--color-grey-soft) 80%,
+    transparent
+  );
+}
+
+/* ──────────────────────────────────────────────
+   CARD STYLES
+────────────────────────────────────────────── */
+.card-mentor {
+  background: white;
+  border: 1px solid var(--color-grey-soft);
+  border-radius: var(--radius-card);
+  transition: all 0.35s var(--ease-premium);
+  overflow: hidden;
+}
+
+.card-mentor:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-card-hover);
+  border-color: var(--color-gold-pale);
+}
+
+.card-mentor:hover .mentor-photo {
+  transform: scale(1.04);
+}
+
+/* ──────────────────────────────────────────────
+   GLASS EFFECT (use sparingly)
+────────────────────────────────────────────── */
+.glass-ivory {
+  background: rgba(251, 248, 241, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+/* ──────────────────────────────────────────────
+   STEP CONNECTOR LINE
+────────────────────────────────────────────── */
+.step-line {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 2px;
+  height: 3rem;
+  background: linear-gradient(
+    to bottom,
+    var(--color-gold),
+    transparent
+  );
+  transform: translateX(-50%);
+}
+
+/* ──────────────────────────────────────────────
+   CATEGORY PILL
+────────────────────────────────────────────── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.875rem;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border: 1.5px solid var(--color-grey-soft);
+  background: white;
+  color: var(--color-navy);
+  cursor: pointer;
+  transition: all 0.25s var(--ease-premium);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.pill:hover {
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+}
+
+.pill-active {
+  background: var(--color-navy);
+  border-color: var(--color-navy);
+  color: white;
+}
+
+/* ──────────────────────────────────────────────
+   HERO FLOATING PILL (around image)
+────────────────────────────────────────────── */
+.hero-pill {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: 0 4px 20px rgba(7, 26, 53, 0.1);
+  cursor: default;
+}
+
+/* ──────────────────────────────────────────────
+   GRADIENT TEXT
+────────────────────────────────────────────── */
+.text-gradient-gold {
+  background: linear-gradient(135deg, var(--color-gold) 0%, var(--color-gold-light) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ──────────────────────────────────────────────
+   CALENDAR
+────────────────────────────────────────────── */
+.calendar-day {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.calendar-day-available {
+  background: rgba(183, 122, 34, 0.1);
+  color: var(--color-gold);
+  font-weight: 600;
+}
+
+.calendar-day-available:hover {
+  background: var(--color-gold);
+  color: white;
+}
+
+.calendar-day-selected {
+  background: var(--color-navy);
+  color: white;
+  font-weight: 600;
+}
+
+.calendar-day-today {
+  border: 2px solid var(--color-gold);
+}
+
+/* ──────────────────────────────────────────────
+   STEPPER
+────────────────────────────────────────────── */
+.stepper-dot {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  transition: all 0.3s var(--ease-premium);
+  border: 2px solid var(--color-grey-soft);
+  background: white;
+  color: var(--color-grey);
+}
+
+.stepper-dot-active {
+  background: var(--color-navy);
+  border-color: var(--color-navy);
+  color: white;
+}
+
+.stepper-dot-done {
+  background: var(--color-gold);
+  border-color: var(--color-gold);
+  color: white;
+}
+
+/* ──────────────────────────────────────────────
+   FORM
+────────────────────────────────────────────── */
+.field-label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-navy);
+  margin-bottom: 0.375rem;
+  letter-spacing: 0.01em;
+}
+
+.field-input {
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  border: 1.5px solid var(--color-grey-soft);
+  border-radius: 0.625rem;
+  background: white;
+  color: var(--color-navy);
+  font-size: 0.9375rem;
+  font-family: var(--font-sans);
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.field-input:focus {
+  border-color: var(--color-navy);
+  box-shadow: 0 0 0 3px rgba(7, 26, 53, 0.06);
+}
+
+.field-input::placeholder {
+  color: var(--color-grey);
+}
+
+.field-textarea {
+  resize: vertical;
+  min-height: 6rem;
+}
+
+/* ──────────────────────────────────────────────
+   TOAST
+────────────────────────────────────────────── */
+.toast-success {
+  border-left: 4px solid var(--color-gold);
+}
+
+.toast-error {
+  border-left: 4px solid var(--color-maroon);
+}
+
+/* ──────────────────────────────────────────────
+   AVAILABILITY EDITOR
+────────────────────────────────────────────── */
+.avail-day-card {
+  border: 1.5px solid var(--color-grey-soft);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: white;
+  transition: all 0.2s ease;
+}
+
+.avail-day-card-active {
+  border-color: var(--color-gold-pale);
+  background: rgba(183, 122, 34, 0.03);
+}
+
+/* ──────────────────────────────────────────────
+   REDUCED MOTION
+────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .floating-pill { animation: none; }
+  .gold-line { animation: none; stroke-dashoffset: 0; }
+}

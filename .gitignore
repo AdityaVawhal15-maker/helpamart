@@ -1,0 +1,21 @@
+node_modules
+dist
+build
+.DS_Store
+
+# Environment files — never commit secrets
+.env
+.env.*
+!.env.example
+
+# SQLite database files (local data only)
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+
+# Uploads (user-generated content)
+data/uploads/*
+!data/uploads/.gitkeep
+
+# TypeScript incremental build info
+*.tsbuildinfo
