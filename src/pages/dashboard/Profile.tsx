@@ -7,15 +7,19 @@ import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 
 export default function DashboardProfile() {
-  const { user, refresh } = useAuth()
+  const { user, loading, refresh } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [name, setName] = useState(user?.name || '')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (!user) navigate('/login')
-  }, [user])
+    if (user?.name) setName(user.name)
+  }, [user?.name])
+
+  useEffect(() => {
+    if (!loading && !user) navigate('/login?next=/dashboard/profile')
+  }, [loading, user, navigate])
 
   async function save() {
     setSaving(true)
@@ -28,6 +32,14 @@ export default function DashboardProfile() {
     } finally {
       setSaving(false)
     }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-ivory flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-gold border-t-transparent animate-spin" />
+      </div>
+    )
   }
 
   if (!user) return null

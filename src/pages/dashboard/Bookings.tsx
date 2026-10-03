@@ -15,7 +15,7 @@ const STATUS_STYLES: Record<string, string> = {
 }
 
 export default function Bookings() {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [bookings, setBookings] = useState<Booking[]>([])
@@ -23,12 +23,26 @@ export default function Bookings() {
   const [activeTab, setActiveTab] = useState<'upcoming' | 'past'>('upcoming')
 
   useEffect(() => {
-    if (!user) { navigate('/login'); return }
+    if (authLoading) return
+    if (!user) {
+      navigate('/login?next=/dashboard/bookings')
+      return
+    }
     api<{ bookings: Booking[] }>('/api/bookings')
-      .then(d => setBookings(d.bookings))
+      .then((d) => setBookings(d.bookings))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [user])
+  }, [user, authLoading, navigate])
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-ivory flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-gold border-t-transparent animate-spin" />
+      </div>
+    )
+  }
+
+  if (!user) return null
 
   async function cancel(id: string) {
     try {

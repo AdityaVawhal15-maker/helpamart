@@ -350,7 +350,7 @@ function MentorEmptyState({ hasSearch }: { hasSearch: boolean }) {
             Your next guide is waiting to be discovered.
           </h2>
           <p className="text-grey mb-8 leading-relaxed">
-            HELPA is preparing the first generation of mentors.
+            HELPAMART is preparing the first generation of mentors.
             Be one of the first people to share your experience.
           </p>
         </>

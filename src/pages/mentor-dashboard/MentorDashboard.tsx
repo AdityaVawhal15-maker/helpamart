@@ -14,15 +14,32 @@ const NAV = [
 ]
 
 export default function MentorDashboard() {
-  const { user, mentor } = useAuth()
+  const { user, mentor, loading } = useAuth()
   const navigate = useNavigate()
   const [stats, setStats] = useState({ upcoming: 0, completed: 0, views: 0 })
 
   useEffect(() => {
-    if (!user) { navigate('/login'); return }
-    if (!mentor) { navigate('/become-a-mentor'); return }
-    api<{ upcoming: number; completed: number }>('/api/mentor/bookings/stats').then(d => setStats({ ...d, views: 0 })).catch(() => {})
-  }, [user, mentor])
+    if (loading) return
+    if (!user) {
+      navigate('/login?next=/mentor-dashboard')
+      return
+    }
+    if (!mentor) {
+      navigate('/become-a-mentor')
+      return
+    }
+    api<{ upcoming: number; completed: number }>('/api/mentor/bookings/stats')
+      .then((d) => setStats({ ...d, views: 0 }))
+      .catch(() => {})
+  }, [user, mentor, loading, navigate])
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-ivory flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-gold border-t-transparent animate-spin" />
+      </div>
+    )
+  }
 
   if (!user || !mentor) return null
 

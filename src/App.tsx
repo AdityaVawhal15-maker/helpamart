@@ -9,6 +9,7 @@ const Home = lazy(() => import('@/pages/Home'))
 const FindMentor = lazy(() => import('@/pages/FindMentor'))
 const MentorProfile = lazy(() => import('@/pages/MentorProfile'))
 const BecomeMentor = lazy(() => import('@/pages/BecomeMentor'))
+const OfferHelp = lazy(() => import('@/pages/OfferHelp'))
 const BookingFlow = lazy(() => import('@/pages/BookingFlow'))
 const HowItWorks = lazy(() => import('@/pages/HowItWorks'))
 const Community = lazy(() => import('@/pages/Community'))
@@ -73,7 +74,7 @@ export default function App() {
           <Route path="/stories" element={<Stories />} />
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/become-a-mentor" element={<BecomeMentor />} />
-          <Route path="/offer-help" element={<BecomeMentor />} />
+          <Route path="/offer-help" element={<OfferHelp />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/dashboard" element={<Dashboard />} />

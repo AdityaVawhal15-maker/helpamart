@@ -5,6 +5,8 @@ import { Compass, MessageCircle, Users, ArrowRight, Star, Briefcase, GraduationC
 import { HERO_PILLS, CATEGORIES } from '@/data/taxonomy'
 import { api } from '@/lib/api'
 import type { Mentor } from '@/types'
+import StoriesSection from '@/components/StoriesSection'
+import CommunityHomePreview from '@/components/CommunityHomePreview'
 
 const ease = [0.16, 1, 0.3, 1] as const
 
@@ -412,7 +414,7 @@ export default function Home() {
                   Your next guide is coming soon.
                 </h3>
                 <p className="text-grey mb-6 max-w-sm mx-auto">
-                  HELPA is preparing the first generation of mentors. Be one of them.
+                  HELPAMART is preparing the first generation of mentors. Be one of them.
                 </p>
                 <Link
                   to="/become-a-mentor"
@@ -542,14 +544,24 @@ export default function Home() {
       </section>
 
       {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          WHY HELPA
+          STORIES (preview — 3 cards)
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+      <StoriesSection preview={true} />
+
+      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          COMMUNITY (preview — 3 live posts)
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+      <CommunityHomePreview />
+
+      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          WHY HELPAMART
       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
       <section className="bg-ivory-light py-24">
         <div className="max-w-7xl mx-auto px-6">
           <FadeIn className="text-center mb-16">
             <p className="text-xs font-bold tracking-[0.15em] text-gold uppercase mb-4 flex items-center justify-center gap-2">
               <span className="w-5 h-px bg-gold" />
-              Why HELPA
+              Why HELPAMART
               <span className="w-5 h-px bg-gold" />
             </p>
             <h2 className="text-display-lg font-display text-navy mb-3">
@@ -562,7 +574,7 @@ export default function Home() {
               {
                 num: '01',
                 title: 'Experience',
-                body: 'Every mentor on HELPA has walked a real path. They bring lived experience, not just credentials.',
+                body: 'Every mentor on HELPAMART has walked a real path. They bring lived experience, not just credentials.',
                 color: 'bg-gold/8 border-gold/20',
                 textColor: 'text-gold',
               },

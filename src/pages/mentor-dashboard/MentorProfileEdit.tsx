@@ -8,7 +8,7 @@ import { useToast } from '@/components/ui/Toast'
 import { CATEGORIES } from '@/data/taxonomy'
 
 export default function MentorProfileEdit() {
-  const { user, mentor, refresh } = useAuth()
+  const { user, mentor, loading: authLoading, refresh } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [saving, setSaving] = useState(false)
@@ -29,9 +29,29 @@ export default function MentorProfileEdit() {
   })
 
   useEffect(() => {
-    if (!user) { navigate('/login'); return }
+    if (mentor) {
+      setForm({
+        fullName: mentor.name ?? '',
+        roleTitle: mentor.role ?? '',
+        company: mentor.company ?? '',
+        location: mentor.location ?? '',
+        intro: mentor.intro ?? '',
+        about: mentor.about ?? '',
+        linkedinUrl: mentor.linkedinUrl ?? '',
+        websiteUrl: mentor.websiteUrl ?? '',
+        photoUrl: mentor.photoUrl ?? '',
+        yearsExperience: mentor.yearsExperience ?? 0,
+        categories: mentor.categories ?? [],
+        languages: mentor.languages ?? ['English'],
+      })
+    }
+  }, [mentor])
+
+  useEffect(() => {
+    if (authLoading) return
+    if (!user) { navigate('/login?next=/mentor-dashboard/profile'); return }
     if (!mentor) { navigate('/become-a-mentor'); return }
-  }, [user, mentor])
+  }, [user, mentor, authLoading, navigate])
 
   function set(key: string, value: unknown) {
     setForm(prev => ({ ...prev, [key]: value }))

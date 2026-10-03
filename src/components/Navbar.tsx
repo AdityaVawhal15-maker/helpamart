@@ -110,11 +110,11 @@ export default function Navbar({ transparent = false }: Props) {
           <Link
             to="/"
             className="flex items-center shrink-0 group transition-all duration-200 hover:opacity-95"
-            aria-label="HELPA home"
+            aria-label="HELPAMART home"
           >
             <img
-              src="/helpa-logo.png"
-              alt="HELPA"
+              src="/helpamart-logo.png"
+              alt="HELPAMART"
               className="h-11 sm:h-12 w-auto object-contain transition-transform duration-250 ease-out group-hover:scale-[1.02]"
             />
           </Link>
@@ -362,10 +362,10 @@ export default function Navbar({ transparent = false }: Props) {
               aria-label="Mobile menu"
             >
               <div className="flex items-center justify-between px-6 h-16 sm:h-[70px] border-b border-grey-soft">
-                <Link to="/" onClick={() => setMobileOpen(false)} className="flex items-center" aria-label="HELPA home">
+                <Link to="/" onClick={() => setMobileOpen(false)} className="flex items-center" aria-label="HELPAMART home">
                   <img
-                    src="/helpa-logo.png"
-                    alt="HELPA"
+                    src="/helpamart-logo.png"
+                    alt="HELPAMART"
                     className="h-10 w-auto object-contain"
                   />
                 </Link>

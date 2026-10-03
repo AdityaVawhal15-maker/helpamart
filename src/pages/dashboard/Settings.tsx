@@ -16,7 +16,7 @@ export default function DashboardSettings() {
             <SettingsRow label="Become a Mentor" description="Share your experience with others" action={<Link to="/become-a-mentor" className="text-sm text-gold font-medium">Set up</Link>} />
             <SettingsRow
               label="Sign Out"
-              description="Sign out of your HELPA account"
+              description="Sign out of your HELPAMART account"
               action={
                 <button onClick={logout} className="text-sm text-maroon font-medium">Sign Out</button>
               }

@@ -14,19 +14,34 @@ const STATUS_STYLES: Record<string, string> = {
 }
 
 export default function MentorBookings() {
-  const { user, mentor } = useAuth()
+  const { user, mentor, loading: authLoading } = useAuth()
   const navigate = useNavigate()
   const [bookings, setBookings] = useState<Booking[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!user) { navigate('/login'); return }
-    if (!mentor) { navigate('/become-a-mentor'); return }
+    if (authLoading) return
+    if (!user) {
+      navigate('/login?next=/mentor-dashboard/bookings')
+      return
+    }
+    if (!mentor) {
+      navigate('/become-a-mentor')
+      return
+    }
     api<{ bookings: Booking[] }>('/api/mentor/bookings')
-      .then(d => setBookings(d.bookings))
+      .then((d) => setBookings(d.bookings))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [user, mentor])
+  }, [user, mentor, authLoading, navigate])
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-ivory flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-gold border-t-transparent animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-ivory">

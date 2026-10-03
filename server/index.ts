@@ -108,7 +108,50 @@ function createSession(userId: string, res: express.Response) {
   })
 }
 
+const verifiedTokens = new Map<string, { userId: string; expiresAt: number }>()
+
+async function verifySupabaseToken(token: string): Promise<string | null> {
+  const cached = verifiedTokens.get(token)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.userId
+  }
+  const supabaseUrl = process.env.SUPABASE_URL || 'https://hespppkftlslbcsizyur.supabase.co'
+  const anonKey = process.env.SUPABASE_ANON_KEY || 'sb_publishable_8wuCVEEzGOAI3eRf6_8QQA_U6WjJICY'
+  try {
+    const res = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: anonKey,
+      },
+    })
+    if (!res.ok) return null
+    const sbUser = (await res.json()) as { id?: string }
+    if (!sbUser?.id) return null
+    verifiedTokens.set(token, { userId: sbUser.id, expiresAt: Date.now() + 5 * 60 * 1000 })
+    return sbUser.id
+  } catch {
+    return null
+  }
+}
+
+app.use(async (req, _res, next) => {
+  const authHeader = req.headers.authorization
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim()
+    const userId = await verifySupabaseToken(token)
+    if (userId) {
+      ;(req as any).supabaseUserId = userId
+    }
+  }
+  next()
+})
+
 function currentUser(req: express.Request): UserRow | null {
+  const supabaseUserId = (req as any).supabaseUserId
+  if (supabaseUserId) {
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(supabaseUserId) as UserRow | undefined
+    if (row) return row
+  }
   const token = req.cookies?.helpa_session as string | undefined
   if (!token) return null
   const row = db
@@ -354,7 +397,6 @@ app.get('/api/config', (_req, res) => {
   res.json({
     googleAuth: googleAuthConfigured(),
     stripe: Boolean(process.env.STRIPE_SECRET_KEY),
-    sms: Boolean(process.env.TWILIO_ACCOUNT_SID),
     platformFeePercent: Number(fee.value),
     stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
   })
@@ -373,7 +415,7 @@ app.get('/api/me', (req, res) => {
   })
 })
 
-app.patch('/api/me', (req, res) => {
+const handleUserUpdate = (req: express.Request, res: express.Response) => {
   const user = requireUser(req, res)
   if (!user) return
   const { name, bio, location, timezone, languages, interests } = req.body as Record<string, unknown>
@@ -382,7 +424,7 @@ app.patch('/api/me', (req, res) => {
      timezone=COALESCE(?, timezone), languages=COALESCE(?, languages), interests=COALESCE(?, interests)
      WHERE id=?`,
   ).run(
-    typeof name === 'string' ? name : null,
+    typeof name === 'string' ? name.trim() : null,
     typeof bio === 'string' ? bio : null,
     typeof location === 'string' ? location : null,
     typeof timezone === 'string' ? timezone : null,
@@ -392,6 +434,86 @@ app.patch('/api/me', (req, res) => {
   )
   const next = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id) as UserRow
   res.json({ user: publicUser(next) })
+}
+
+app.patch('/api/me', handleUserUpdate)
+app.put('/api/me', handleUserUpdate)
+app.put('/api/users/me', handleUserUpdate)
+app.patch('/api/users/me', handleUserUpdate)
+
+app.post('/api/auth/supabase-sync', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : req.body?.access_token
+  if (!token) {
+    return res.status(401).json({ error: 'No authorization token provided.' })
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL || 'https://hespppkftlslbcsizyur.supabase.co'
+  const anonKey = process.env.SUPABASE_ANON_KEY || 'sb_publishable_8wuCVEEzGOAI3eRf6_8QQA_U6WjJICY'
+
+  let sbUser: any = null
+  try {
+    const sbRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: anonKey,
+      },
+    })
+    if (!sbRes.ok) {
+      return res.status(401).json({ error: 'Invalid or expired authentication session.' })
+    }
+    sbUser = await sbRes.json()
+  } catch {
+    return res.status(500).json({ error: 'Failed to verify session with authentication server.' })
+  }
+
+  if (!sbUser?.id) {
+    return res.status(401).json({ error: 'User could not be identified.' })
+  }
+
+  const userId = sbUser.id as string
+  const email = (sbUser.email || '').toLowerCase()
+  const metadata = sbUser.user_metadata || {}
+  const name = (metadata.name || metadata.full_name || req.body?.name || '').trim()
+  const photoUrl = metadata.avatar_url || metadata.picture || null
+
+  let user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow | undefined
+  if (!user && email) {
+    user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as UserRow | undefined
+    if (user) {
+      db.prepare('UPDATE users SET id = ?, photo_url = COALESCE(photo_url, ?) WHERE id = ?').run(
+        userId,
+        photoUrl,
+        user.id,
+      )
+      db.prepare('UPDATE mentor_profiles SET user_id = ? WHERE user_id = ?').run(userId, user.id)
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow
+    }
+  }
+
+  if (!user) {
+    db.prepare(
+      `INSERT INTO users (id, email, name, photo_url, created_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run(userId, email || null, name, photoUrl, nowIso())
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow
+  } else {
+    if ((name && !user.name) || (photoUrl && !user.photo_url)) {
+      db.prepare('UPDATE users SET name = COALESCE(NULLIF(name, ""), ?), photo_url = COALESCE(photo_url, ?) WHERE id = ?').run(
+        name,
+        photoUrl,
+        userId,
+      )
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow
+    }
+  }
+
+  createSession(user.id, res)
+  const mentor = db.prepare('SELECT * FROM mentor_profiles WHERE user_id = ?').get(user.id) as MentorRow | undefined
+  res.json({
+    user: publicUser(user),
+    mentor: mentor ? serializeMentor(mentor, { includePrivate: true }) : null,
+    calendar: calendarStatus(user.id),
+  })
 })
 
 app.post('/api/auth/register', (req, res) => {
@@ -433,61 +555,46 @@ app.post('/api/auth/logout', (req, res) => {
 })
 
 app.post('/api/auth/otp/request', (req, res) => {
-  const { destination, channel } = req.body as { destination?: string; channel?: 'email' | 'mobile' }
-  if (!destination || !channel) return res.status(400).json({ error: 'Destination is required.' })
+  const { destination } = req.body as { destination?: string }
+  if (!destination || !destination.includes('@')) {
+    return res.status(400).json({ error: 'A valid email destination is required.' })
+  }
   const code = String(Math.floor(100000 + Math.random() * 900000))
   const id = crypto.randomUUID()
   const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString()
   db.prepare(
     `INSERT INTO otp_codes (id, destination, channel, code_hash, expires_at) VALUES (?, ?, ?, ?, ?)`,
-  ).run(id, destination, channel, bcrypt.hashSync(code, 8), expires)
+  ).run(id, destination.toLowerCase().trim(), 'email', bcrypt.hashSync(code, 8), expires)
 
-  const smsReady = Boolean(process.env.TWILIO_ACCOUNT_SID)
-  if (channel === 'mobile' && !smsReady) {
-    console.info(`[HELPA OTP] ${destination}: ${code} (SMS provider not configured; logged for local development)`)
-    return res.json({
-      ok: true,
-      delivery: 'console',
-      message: 'SMS is not configured. In development, the code is written to the server log.',
-    })
-  }
-  if (channel === 'email') {
-    console.info(`[HELPA OTP] ${destination}: ${code}`)
-    return res.json({
-      ok: true,
-      delivery: 'console',
-      message: 'Email delivery is not configured. The code is written to the server log for local development.',
-    })
-  }
-  res.json({ ok: true, delivery: 'sms' })
+  console.info(`[HELPA EMAIL OTP] ${destination}: ${code}`)
+  res.json({
+    ok: true,
+    delivery: 'email',
+    message: 'Verification code sent to your email.',
+  })
 })
 
 app.post('/api/auth/otp/verify', (req, res) => {
   const { destination, code, name } = req.body as { destination?: string; code?: string; name?: string }
   if (!destination || !code) return res.status(400).json({ error: 'Code is required.' })
+  const cleanEmail = destination.toLowerCase().trim()
   const row = db
     .prepare(
       `SELECT * FROM otp_codes WHERE destination = ? AND consumed = 0 AND expires_at > ? ORDER BY expires_at DESC LIMIT 1`,
     )
-    .get(destination, nowIso()) as { id: string; code_hash: string; channel: string } | undefined
+    .get(cleanEmail, nowIso()) as { id: string; code_hash: string } | undefined
   if (!row || !bcrypt.compareSync(code, row.code_hash)) {
     return res.status(401).json({ error: 'That code is invalid or has expired.' })
   }
   db.prepare('UPDATE otp_codes SET consumed = 1 WHERE id = ?').run(row.id)
-  const isEmail = destination.includes('@')
-  let user = (
-    isEmail
-      ? db.prepare('SELECT * FROM users WHERE email = ?').get(destination.toLowerCase())
-      : db.prepare('SELECT * FROM users WHERE phone = ?').get(destination)
-  ) as UserRow | undefined
+  let user = db.prepare('SELECT * FROM users WHERE email = ?').get(cleanEmail) as UserRow | undefined
   if (!user) {
     const id = crypto.randomUUID()
     db.prepare(
-      `INSERT INTO users (id, email, phone, name, created_at) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)`,
     ).run(
       id,
-      isEmail ? destination.toLowerCase() : null,
-      isEmail ? null : destination,
+      cleanEmail,
       name?.trim() || '',
       nowIso(),
     )
@@ -1024,46 +1131,61 @@ app.post('/api/bookings/:id/cancel', async (req, res) => {
   res.json({ ok: true })
 })
 
+app.get('/api/community/stats', (_req, res) => {
+  const postCount = (db.prepare('SELECT COUNT(*) as c FROM community_posts').get() as { c: number }).c
+  const replyCount = (db.prepare('SELECT COUNT(*) as c FROM community_replies').get() as { c: number }).c
+  const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c
+  res.json({ postCount, replyCount, userCount })
+})
+
 app.get('/api/community', (req, res) => {
   const category = req.query.category as string | undefined
-  const posts = (
-    category
-      ? db
-          .prepare(
-            `SELECT p.*, u.name as author_name FROM community_posts p JOIN users u ON u.id = p.author_id
-             WHERE p.category = ? ORDER BY p.created_at DESC`,
-          )
-          .all(category)
-      : db
-          .prepare(
-            `SELECT p.*, u.name as author_name FROM community_posts p JOIN users u ON u.id = p.author_id
-             ORDER BY p.created_at DESC`,
-          )
-          .all()
-  ) as Record<string, unknown>[]
-  const withCounts = posts.map((p) => {
-    const replies = db.prepare('SELECT COUNT(*) as c FROM community_replies WHERE post_id = ?').get(p.id as string) as {
-      c: number
-    }
-    return { ...p, replyCount: replies.c }
+  const search = (req.query.search as string | undefined)?.trim()
+  const limit = Math.min(Number(req.query.limit || 50), 100)
+  const me = currentUser(req)
+  const userId = me ? me.id : null
+
+  let rows: Record<string, unknown>[]
+  if (category && category !== 'All') {
+    rows = db.prepare(
+      `SELECT p.*, u.name as author_name FROM community_posts p JOIN users u ON u.id = p.author_id
+       WHERE p.category = ? ORDER BY p.created_at DESC LIMIT ?`
+    ).all(category, limit) as Record<string, unknown>[]
+  } else if (search) {
+    const q = `%${search}%`
+    rows = db.prepare(
+      `SELECT p.*, u.name as author_name FROM community_posts p JOIN users u ON u.id = p.author_id
+       WHERE p.title LIKE ? OR p.body LIKE ? ORDER BY p.created_at DESC LIMIT ?`
+    ).all(q, q, limit) as Record<string, unknown>[]
+  } else {
+    rows = db.prepare(
+      `SELECT p.*, u.name as author_name FROM community_posts p JOIN users u ON u.id = p.author_id
+       ORDER BY p.created_at DESC LIMIT ?`
+    ).all(limit) as Record<string, unknown>[]
+  }
+
+  const posts = rows.map((p) => {
+    const replyCount = (db.prepare('SELECT COUNT(*) as c FROM community_replies WHERE post_id = ?').get(p.id as string) as { c: number }).c
+    const likesCount = (db.prepare('SELECT COUNT(*) as c FROM community_likes WHERE post_id = ?').get(p.id as string) as { c: number }).c
+    const likedByMe = userId
+      ? !!(db.prepare('SELECT 1 FROM community_likes WHERE user_id = ? AND post_id = ?').get(userId, p.id as string))
+      : false
+    return { ...p, replyCount, likesCount, likedByMe }
   })
-  res.json({ posts: withCounts })
+  res.json({ posts })
 })
 
 app.get('/api/community/:id', (req, res) => {
   const post = db
-    .prepare(
-      `SELECT p.*, u.name as author_name FROM community_posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?`,
-    )
-    .get(req.params.id)
+    .prepare(`SELECT p.*, u.name as author_name FROM community_posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?`)
+    .get(req.params.id) as Record<string, unknown> | undefined
   if (!post) return res.status(404).json({ error: 'Discussion not found.' })
   const replies = db
-    .prepare(
-      `SELECT r.*, u.name as author_name FROM community_replies r JOIN users u ON u.id = r.author_id
-       WHERE r.post_id = ? ORDER BY r.created_at ASC`,
-    )
+    .prepare(`SELECT r.*, u.name as author_name FROM community_replies r JOIN users u ON u.id = r.author_id WHERE r.post_id = ? ORDER BY r.created_at ASC`)
     .all(req.params.id)
-  res.json({ post, replies })
+  const likesCount = (db.prepare('SELECT COUNT(*) as c FROM community_likes WHERE post_id = ?').get(req.params.id) as { c: number }).c
+  const replyCount = (db.prepare('SELECT COUNT(*) as c FROM community_replies WHERE post_id = ?').get(req.params.id) as { c: number }).c
+  res.json({ post: { ...post, likesCount, replyCount }, replies })
 })
 
 app.post('/api/community', (req, res) => {
@@ -1074,10 +1196,16 @@ app.post('/api/community', (req, res) => {
     return res.status(400).json({ error: 'Category, question, and details are required.' })
   }
   const id = crypto.randomUUID()
-  db.prepare(
-    `INSERT INTO community_posts (id, author_id, category, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(id, user.id, category, title.trim(), body.trim(), nowIso())
-  res.json({ id })
+  const createdAt = nowIso()
+  db.prepare(`INSERT INTO community_posts (id, author_id, category, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(id, user.id, category, title.trim(), body.trim(), createdAt)
+  res.json({
+    post: {
+      id, category, title: title.trim(), body: body.trim(),
+      author_name: user.name, author_id: user.id,
+      created_at: createdAt, replyCount: 0, likesCount: 0, likedByMe: false
+    }
+  })
 })
 
 app.post('/api/community/:id/replies', (req, res) => {
@@ -1088,10 +1216,23 @@ app.post('/api/community/:id/replies', (req, res) => {
   const post = db.prepare('SELECT id FROM community_posts WHERE id = ?').get(req.params.id)
   if (!post) return res.status(404).json({ error: 'Discussion not found.' })
   const id = crypto.randomUUID()
-  db.prepare(
-    `INSERT INTO community_replies (id, post_id, author_id, body, created_at) VALUES (?, ?, ?, ?, ?)`,
-  ).run(id, req.params.id, user.id, body.trim(), nowIso())
-  res.json({ id })
+  const createdAt = nowIso()
+  db.prepare(`INSERT INTO community_replies (id, post_id, author_id, body, created_at) VALUES (?, ?, ?, ?, ?)`)
+    .run(id, req.params.id, user.id, body.trim(), createdAt)
+  res.json({ reply: { id, post_id: req.params.id, author_id: user.id, author_name: user.name, body: body.trim(), created_at: createdAt } })
+})
+
+app.post('/api/community/:id/like', (req, res) => {
+  const user = requireUser(req, res)
+  if (!user) return
+  const existing = db.prepare('SELECT 1 FROM community_likes WHERE user_id = ? AND post_id = ?').get(user.id, req.params.id)
+  if (existing) {
+    db.prepare('DELETE FROM community_likes WHERE user_id = ? AND post_id = ?').run(user.id, req.params.id)
+  } else {
+    db.prepare(`INSERT INTO community_likes (user_id, post_id, created_at) VALUES (?, ?, ?)`).run(user.id, req.params.id, nowIso())
+  }
+  const likesCount = (db.prepare('SELECT COUNT(*) as c FROM community_likes WHERE post_id = ?').get(req.params.id) as { c: number }).c
+  res.json({ liked: !existing, likesCount })
 })
 
 app.post('/api/community/:id/follow', (req, res) => {

@@ -10,7 +10,7 @@ import type { MentorService } from '@/types'
 type Draft = Omit<MentorService, 'id'>
 
 export default function MentorServices() {
-  const { user, mentor } = useAuth()
+  const { user, mentor, loading: authLoading } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [services, setServices] = useState<Array<MentorService | Draft & { id?: string }>>([])
@@ -18,7 +18,8 @@ export default function MentorServices() {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (!user) { navigate('/login'); return }
+    if (authLoading) return
+    if (!user) { navigate('/login?next=/mentor-dashboard/services'); return }
     if (!mentor) { navigate('/become-a-mentor'); return }
     api<{ services: MentorService[] }>('/api/mentor/services')
       .then(d => setServices(d.services))

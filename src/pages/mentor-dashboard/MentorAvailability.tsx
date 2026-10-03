@@ -10,7 +10,7 @@ type Rule = { weekday: number; startTime: string; endTime: string; enabled: bool
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 export default function MentorAvailability() {
-  const { user, mentor, refresh } = useAuth()
+  const { user, mentor, loading: authLoading, refresh } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [timezone, setTimezone] = useState(mentor?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
@@ -27,7 +27,8 @@ export default function MentorAvailability() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!user) { navigate('/login'); return }
+    if (authLoading) return
+    if (!user) { navigate('/login?next=/mentor-dashboard/availability'); return }
     if (!mentor) { navigate('/become-a-mentor'); return }
     api<{ rules: Rule[]; timezone: string }>('/api/mentor/availability')
       .then(d => {

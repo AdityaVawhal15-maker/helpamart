@@ -184,6 +184,15 @@ CREATE TABLE IF NOT EXISTS community_follows (
   PRIMARY KEY (user_id, post_id)
 );
 
+CREATE TABLE IF NOT EXISTS community_likes (
+  user_id TEXT NOT NULL,
+  post_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, post_id),
+  FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS stories (
   id TEXT PRIMARY KEY,
   author_name TEXT NOT NULL,

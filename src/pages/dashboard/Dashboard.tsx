@@ -14,14 +14,28 @@ const NAV = [
 ]
 
 export default function Dashboard() {
-  const { user, logout } = useAuth()
+  const { user, loading, logout } = useAuth()
   const navigate = useNavigate()
   const [upcoming, setUpcoming] = useState<Booking[]>([])
 
   useEffect(() => {
-    if (!user) { navigate('/login?next=/dashboard'); return }
-    api<{ bookings: Booking[] }>('/api/bookings?status=confirmed').then(d => setUpcoming(d.bookings.slice(0, 3))).catch(() => {})
-  }, [user])
+    if (loading) return
+    if (!user) {
+      navigate('/login?next=/dashboard')
+      return
+    }
+    api<{ bookings: Booking[] }>('/api/bookings?status=confirmed')
+      .then((d) => setUpcoming(d.bookings.slice(0, 3)))
+      .catch(() => {})
+  }, [user, loading, navigate])
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-ivory flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-gold border-t-transparent animate-spin" />
+      </div>
+    )
+  }
 
   if (!user) return null
 
@@ -77,7 +91,7 @@ export default function Dashboard() {
             <h1 className="text-display-md font-display text-navy mb-1">
               Welcome back, <em className="italic-serif" style={{ fontStyle: 'italic' }}>{user.name?.split(' ')[0] || 'there'}</em>.
             </h1>
-            <p className="text-grey text-sm mb-8">Here's what's happening with your HELPA journey.</p>
+            <p className="text-grey text-sm mb-8">Here's what's happening with your HELPAMART journey.</p>
 
             {/* Quick stats */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
