@@ -59,6 +59,9 @@ export default function Signup() {
     setError('')
     setSuccessMsg('')
     try {
+      try {
+        localStorage.setItem('helpa_pending_signup_name', cleanName)
+      } catch {}
       await sendEmailOtp({ email: cleanEmail, isSignUp: true, name: cleanName })
       setOtpSent(true)
       setResendCooldown(60)
@@ -298,7 +301,7 @@ export default function Signup() {
                         }}
                         onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
                         placeholder="you@example.com"
-                        className="field-input pl-10"
+                        className="field-input pl-10 pr-12"
                         autoComplete="email"
                         disabled={loading}
                       />

@@ -149,7 +149,7 @@ export function formatPrice(priceCents: number, currency: string = 'INR') {
 }
 
 export default function BecomeMentor() {
-  const { user, mentor, loading: authLoading, refresh } = useAuth()
+  const { user, mentor, loading: authLoading, refresh, saveMentorProfile } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [step, setStep] = useState(0)
@@ -266,19 +266,48 @@ export default function BecomeMentor() {
 
     setSaving(true)
     try {
-      await api('/api/mentor/me', {
-        method: 'PUT',
-        body: JSON.stringify({
-          fullName, roleTitle, company, location, intro, about,
-          photoUrl: photoUrl || null,
-          languages, yearsExperience: yearsExp,
-          linkedinUrl: linkedinUrl || null, websiteUrl: websiteUrl || null,
-          companies, education, achievements, timezone,
-          categories, skills,
-          availability,
-          services,
-        }),
+      await saveMentorProfile({
+        name: fullName,
+        role: roleTitle,
+        company,
+        location,
+        intro,
+        about,
+        photoUrl: photoUrl || null,
+        languages,
+        yearsExperience: yearsExp,
+        linkedinUrl: linkedinUrl || null,
+        websiteUrl: websiteUrl || null,
+        companies,
+        education,
+        achievements,
+        timezone,
+        categories,
+        skills,
+        services: services.map((s) => ({
+          title: s.title,
+          description: s.description || '',
+          durationMinutes: s.durationMinutes,
+          priceCents: s.priceCents,
+          currency: s.currency,
+          format: s.format,
+        })),
       })
+      try {
+        await api('/api/mentor/me', {
+          method: 'PUT',
+          body: JSON.stringify({
+            fullName, roleTitle, company, location, intro, about,
+            photoUrl: photoUrl || null,
+            languages, yearsExperience: yearsExp,
+            linkedinUrl: linkedinUrl || null, websiteUrl: websiteUrl || null,
+            companies, education, achievements, timezone,
+            categories, skills,
+            availability,
+            services,
+          }),
+        })
+      } catch {}
       await refresh()
       setStep(s => Math.min(s + 1, STEPS.length - 1))
       window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -292,9 +321,14 @@ export default function BecomeMentor() {
   async function handlePublish() {
     setPublishing(true)
     try {
-      const res = await api<{ mentor: { slug: string } }>('/api/mentor/publish', { method: 'POST' })
+      const saved = await saveMentorProfile({ status: 'published' })
+      let slug = saved.slug
+      try {
+        const res = await api<{ mentor: { slug: string } }>('/api/mentor/publish', { method: 'POST' })
+        if (res?.mentor?.slug) slug = res.mentor.slug
+      } catch {}
       await refresh()
-      setPublishResult({ slug: res.mentor.slug })
+      setPublishResult({ slug })
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (err: unknown) {
       toast((err as Error).message || 'Could not publish. Ensure all required fields are filled.', 'error')

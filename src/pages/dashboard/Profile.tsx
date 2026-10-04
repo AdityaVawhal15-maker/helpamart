@@ -7,7 +7,7 @@ import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 
 export default function DashboardProfile() {
-  const { user, loading, refresh } = useAuth()
+  const { user, loading, refresh, updateUserProfile } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [name, setName] = useState(user?.name || '')
@@ -22,9 +22,16 @@ export default function DashboardProfile() {
   }, [loading, user, navigate])
 
   async function save() {
+    if (!name.trim()) {
+      toast('Please enter your name.', 'error')
+      return
+    }
     setSaving(true)
     try {
-      await api('/api/users/me', { method: 'PUT', body: JSON.stringify({ name }) })
+      await updateUserProfile({ name: name.trim() })
+      try {
+        await api('/api/users/me', { method: 'PUT', body: JSON.stringify({ name: name.trim() }) })
+      } catch {}
       await refresh()
       toast('Profile updated.', 'success')
     } catch (e: unknown) {

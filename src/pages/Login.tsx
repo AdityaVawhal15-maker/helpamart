@@ -286,7 +286,7 @@ export default function Login() {
                         }}
                         onKeyDown={(e) => e.key === 'Enter' && handleSendOtp()}
                         placeholder="name@example.com"
-                        className="field-input pl-10"
+                        className="field-input pl-10 pr-12"
                         autoFocus
                         autoComplete="email"
                         disabled={loading}

@@ -8,7 +8,7 @@ import { useToast } from '@/components/ui/Toast'
 import { CATEGORIES } from '@/data/taxonomy'
 
 export default function MentorProfileEdit() {
-  const { user, mentor, loading: authLoading, refresh } = useAuth()
+  const { user, mentor, loading: authLoading, refresh, saveMentorProfile } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [saving, setSaving] = useState(false)
@@ -66,7 +66,22 @@ export default function MentorProfileEdit() {
   async function save() {
     setSaving(true)
     try {
-      await api('/api/mentor/me', { method: 'PUT', body: JSON.stringify(form) })
+      await saveMentorProfile({
+        name: form.fullName,
+        role: form.roleTitle,
+        company: form.company,
+        location: form.location,
+        intro: form.intro,
+        about: form.about,
+        linkedinUrl: form.linkedinUrl || null,
+        websiteUrl: form.websiteUrl || null,
+        photoUrl: form.photoUrl || null,
+        yearsExperience: form.yearsExperience,
+        categories: form.categories,
+      })
+      try {
+        await api('/api/mentor/me', { method: 'PUT', body: JSON.stringify(form) })
+      } catch {}
       await refresh()
       toast('Profile updated!', 'success')
     } catch (e: unknown) {

@@ -6,7 +6,7 @@ const supabaseAnonKey =
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
   'sb_publishable_8wuCVEEzGOAI3eRf6_8QQA_U6WjJICY'
 
-export const supabase = createClient(supabaseUrl, supabaseKeyClean(supabaseAnonKey), {
+export const supabase = createClient(supabaseUrl.trim(), supabaseKeyClean(supabaseAnonKey), {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -17,6 +17,32 @@ export const supabase = createClient(supabaseUrl, supabaseKeyClean(supabaseAnonK
 
 function supabaseKeyClean(key: string): string {
   return key.trim()
+}
+
+/**
+ * Determine the canonical origin for OAuth redirects.
+ * Always resolves to canonical https://www.helpamart.com in production,
+ * matching Vercel's canonical 308 redirect and avoiding parameter loss.
+ */
+export function getCanonicalOrigin(): string {
+  if (typeof window === 'undefined') return 'https://www.helpamart.com'
+  const { hostname, origin } = window.location
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return origin
+  }
+  // If hosted on helpamart domain or subdomains
+  if (hostname.endsWith('helpamart.com')) {
+    return 'https://www.helpamart.com'
+  }
+  return origin
+}
+
+/**
+ * Build the exact canonical production redirect destination.
+ */
+export function getProductionRedirectUrl(nextPath = '/dashboard'): string {
+  const cleanNext = nextPath.startsWith('/') ? nextPath : `/${nextPath}`
+  return `${getCanonicalOrigin()}${cleanNext}`
 }
 
 /**
@@ -67,11 +93,10 @@ export async function verifyEmailOtp({
 
 /**
  * Trigger Google OAuth sign-in via Supabase.
- * Uses window.location.origin so it automatically works across localhost and https://helpamart.com.
+ * Uses the canonical production redirect URL.
  */
 export async function signInWithGoogle(nextPath = '/dashboard') {
-  const cleanNext = nextPath.startsWith('/') ? nextPath : `/${nextPath}`
-  const redirectTo = `${window.location.origin}${cleanNext}`
+  const redirectTo = getProductionRedirectUrl(nextPath)
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
@@ -92,6 +117,7 @@ export async function signInWithGoogle(nextPath = '/dashboard') {
 export async function signOutSupabase() {
   const { error } = await supabase.auth.signOut()
   if (error) {
-    console.warn('Supabase signOut warning:', error.message)
+    console.warn('[AUTH] Supabase signOut warning:', error.message)
+    throw error
   }
 }
