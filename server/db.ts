@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS bookings (
   mentor_id TEXT NOT NULL,
   mentee_id TEXT NOT NULL,
   service_id TEXT NOT NULL,
+  mentor_email TEXT,
+  student_email TEXT,
   start_at TEXT NOT NULL,
   end_at TEXT NOT NULL,
   timezone TEXT NOT NULL,
@@ -145,10 +147,15 @@ CREATE TABLE IF NOT EXISTS bookings (
   notes TEXT,
   stripe_session_id TEXT,
   created_at TEXT NOT NULL,
+  updated_at TEXT,
   FOREIGN KEY (mentor_id) REFERENCES mentor_profiles(id),
   FOREIGN KEY (mentee_id) REFERENCES users(id),
   FOREIGN KEY (service_id) REFERENCES mentor_services(id)
 );
+
+try { db.exec('ALTER TABLE bookings ADD COLUMN mentor_email TEXT'); } catch {}
+try { db.exec('ALTER TABLE bookings ADD COLUMN student_email TEXT'); } catch {}
+try { db.exec('ALTER TABLE bookings ADD COLUMN updated_at TEXT'); } catch {}
 
 CREATE TABLE IF NOT EXISTS saved_mentors (
   user_id TEXT NOT NULL,

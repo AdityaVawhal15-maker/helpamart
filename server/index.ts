@@ -16,6 +16,10 @@ import {
   googleAuthConfigured,
   saveCalendarConnection,
 } from './calendar.ts'
+import {
+  sendMentorBookingNotification,
+  sendStudentBookingConfirmation,
+} from './email.ts'
 
 const app = express()
 const PORT = Number(process.env.PORT || 8787)
@@ -301,6 +305,35 @@ function serializeMentor(m: MentorRow, opts?: { includePrivate?: boolean }) {
     services: servicesFor(m.id, m.status === 'published' && !opts?.includePrivate),
     startingPriceCents: lowest.min,
     availabilityPreview: nextAvailabilityLabel(m),
+  }
+}
+
+type BookingRow = Record<string, unknown>
+
+function serializeBooking(b: BookingRow) {
+  return {
+    id: b.id,
+    mentorId: b.mentor_id,
+    menteeId: b.mentee_id,
+    serviceId: b.service_id,
+    startAt: b.start_at,
+    endAt: b.end_at,
+    timezone: b.timezone,
+    status: b.status,
+    paymentStatus: b.payment_status,
+    priceCents: b.price_cents,
+    currency: b.currency,
+    meetLink: b.meet_link || null,
+    calendarEventId: b.calendar_event_id || null,
+    calendarStatus: b.calendar_status || null,
+    notes: b.notes || null,
+    createdAt: b.created_at,
+    // Joined fields (present only in list queries)
+    mentorName: b.mentor_name || null,
+    mentorSlug: b.mentor_slug || null,
+    mentorPhoto: b.mentor_photo || null,
+    serviceTitle: b.service_title || null,
+    menteeName: b.mentee_name || null,
   }
 }
 
@@ -1012,6 +1045,11 @@ app.post('/api/bookings', async (req, res) => {
   const paymentStatus = price === 0 ? 'not_required' : process.env.STRIPE_SECRET_KEY ? 'pending' : 'unconfigured'
   const status = price === 0 ? 'confirmed' : 'pending'
 
+  // Resolve mentor email for notifications
+  const mentorUser = db.prepare('SELECT email FROM users WHERE id = ?').get(mentor.user_id) as { email: string | null } | undefined
+  const mentorEmail = mentorUser?.email || null
+  const studentEmail = user.email || null
+
   try {
     db.exec('BEGIN')
     const clash = db
@@ -1025,13 +1063,15 @@ app.post('/api/bookings', async (req, res) => {
       return res.status(409).json({ error: 'That time was just booked by someone else.' })
     }
     db.prepare(
-      `INSERT INTO bookings (id, mentor_id, mentee_id, service_id, start_at, end_at, timezone, status, payment_status, price_cents, currency, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO bookings (id, mentor_id, mentee_id, service_id, mentor_email, student_email, start_at, end_at, timezone, status, payment_status, price_cents, currency, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       bookingId,
       mentor.id,
       user.id,
       service.id,
+      mentorEmail,
+      studentEmail,
       start.toISOString(),
       end.toISOString(),
       timezone,
@@ -1039,6 +1079,7 @@ app.post('/api/bookings', async (req, res) => {
       paymentStatus,
       price,
       service.currency,
+      nowIso(),
       nowIso(),
     )
     db.exec('COMMIT')
@@ -1048,20 +1089,23 @@ app.post('/api/bookings', async (req, res) => {
   }
 
   let calendarNote: string | null = null
+  let meetLink: string | null = null
+
   if (status === 'confirmed') {
     const cal = await createMeetEvent({
       mentorUserId: mentor.user_id,
       menteeEmail: user.email,
       title: `${service.title} with ${mentor.full_name}`,
-      description: 'HELPA session',
+      description: 'HELPAMART session',
       start: start.toISOString(),
       end: end.toISOString(),
       timezone,
     })
     if (cal.ok) {
+      meetLink = cal.meetLink || null
       db.prepare(
-        `UPDATE bookings SET meet_link=?, calendar_event_id=?, calendar_status='created' WHERE id=?`,
-      ).run(cal.meetLink, cal.eventId, bookingId)
+        `UPDATE bookings SET meet_link=?, calendar_event_id=?, calendar_status='created', updated_at=? WHERE id=?`,
+      ).run(cal.meetLink, cal.eventId, nowIso(), bookingId)
     } else {
       calendarNote =
         cal.reason === 'not_configured'
@@ -1069,15 +1113,74 @@ app.post('/api/bookings', async (req, res) => {
           : cal.reason === 'not_authorized'
             ? 'Your booking is confirmed. The mentor has not connected Google Calendar yet, so a Meet link is not available.'
             : 'Your booking was saved, but calendar connection needs attention.'
-      db.prepare(`UPDATE bookings SET calendar_status=? WHERE id=?`).run(cal.reason, bookingId)
+      db.prepare(`UPDATE bookings SET calendar_status=?, updated_at=? WHERE id=?`).run(cal.reason, nowIso(), bookingId)
     }
+
+    // Send email notifications (non-blocking — errors are logged but do not fail the request)
+    const emailDetails = {
+      bookingId,
+      mentorName: mentor.full_name,
+      mentorEmail: mentorEmail || '',
+      studentName: user.name || 'Student',
+      studentEmail: studentEmail || '',
+      serviceTitle: service.title,
+      startAt: start.toISOString(),
+      endAt: end.toISOString(),
+      durationMinutes: service.duration_minutes,
+      timezone,
+      meetLink,
+    }
+
+    Promise.all([
+      mentorEmail ? sendMentorBookingNotification(emailDetails) : Promise.resolve({ sent: false, reason: 'no_mentor_email' }),
+      studentEmail ? sendStudentBookingConfirmation(emailDetails) : Promise.resolve({ sent: false, reason: 'no_student_email' }),
+    ]).then(([mentorResult, studentResult]) => {
+      console.log(`[BOOKING ${bookingId}] Email notifications — mentor: ${JSON.stringify(mentorResult)}, student: ${JSON.stringify(studentResult)}`)
+    }).catch((err) => {
+      console.error(`[BOOKING ${bookingId}] Email dispatch error:`, err)
+    })
   } else if (paymentStatus === 'unconfigured') {
     calendarNote =
       'This session has a fee, but payments are not configured yet. The time is held as pending until a payment provider is connected.'
   }
 
-  const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId)
-  res.json({ booking, mentor: serializeMentor(mentor), service, calendarNote })
+  const rawBooking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId) as BookingRow
+  res.json({ booking: serializeBooking(rawBooking), mentor: serializeMentor(mentor), service, calendarNote })
+})
+
+// ─── Mentor-specific booking routes ────────────────────────────────────────
+
+app.get('/api/mentor/bookings/stats', (req, res) => {
+  const user = requireUser(req, res)
+  if (!user) return
+  const mentor = db.prepare('SELECT id FROM mentor_profiles WHERE user_id = ?').get(user.id) as { id: string } | undefined
+  if (!mentor) return res.json({ upcoming: 0, completed: 0 })
+  const now = nowIso()
+  const upcoming = (db.prepare(
+    `SELECT COUNT(*) as c FROM bookings WHERE mentor_id = ? AND status IN ('confirmed','pending') AND start_at >= ?`
+  ).get(mentor.id, now) as { c: number }).c
+  const completed = (db.prepare(
+    `SELECT COUNT(*) as c FROM bookings WHERE mentor_id = ? AND (status = 'completed' OR (status = 'confirmed' AND end_at < ?))`
+  ).get(mentor.id, now) as { c: number }).c
+  res.json({ upcoming, completed })
+})
+
+app.get('/api/mentor/bookings', (req, res) => {
+  const user = requireUser(req, res)
+  if (!user) return
+  const mentor = db.prepare('SELECT id FROM mentor_profiles WHERE user_id = ?').get(user.id) as { id: string } | undefined
+  if (!mentor) return res.json({ bookings: [] })
+  const rows = db.prepare(
+    `SELECT b.*, m.full_name as mentor_name, m.slug as mentor_slug, m.photo_url as mentor_photo,
+            s.title as service_title, u.name as mentee_name
+     FROM bookings b
+     JOIN mentor_profiles m ON m.id = b.mentor_id
+     JOIN mentor_services s ON s.id = b.service_id
+     JOIN users u ON u.id = b.mentee_id
+     WHERE b.mentor_id = ?
+     ORDER BY b.start_at DESC`
+  ).all(mentor.id)
+  res.json({ bookings: (rows as BookingRow[]).map(serializeBooking) })
 })
 
 app.get('/api/bookings', (req, res) => {
@@ -1098,7 +1201,7 @@ app.get('/api/bookings', (req, res) => {
        ORDER BY b.start_at DESC`,
     )
     .all(...(mentor ? [user.id, mentor.id] : [user.id]))
-  res.json({ bookings: rows })
+  res.json({ bookings: (rows as BookingRow[]).map(serializeBooking) })
 })
 
 app.post('/api/bookings/:id/cancel', async (req, res) => {
