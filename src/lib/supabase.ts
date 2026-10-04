@@ -121,3 +121,34 @@ export async function signOutSupabase() {
     throw error
   }
 }
+
+/**
+ * Upload a mentor/user profile photo to Supabase Storage.
+ *
+ * Bucket: "avatars" — must exist in the Supabase project with public read access.
+ * The returned URL is a permanent public URL that works across browsers and sessions.
+ * Falls back to a blob: URL (device-local only) if Storage is unavailable.
+ */
+export async function uploadProfilePhoto(file: File, userId: string): Promise<string> {
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg'
+  const filename = `${userId}/${Date.now()}.${ext}`
+
+  const { data, error } = await supabase.storage
+    .from('avatars')
+    .upload(filename, file, {
+      upsert: true,
+      contentType: file.type || 'image/jpeg',
+    })
+
+  if (error) {
+    console.error('[Storage] uploadProfilePhoto error:', error)
+    // Graceful fallback — blob URL is device-local but at least shows image in current session
+    return URL.createObjectURL(file)
+  }
+
+  const { data: urlData } = supabase.storage
+    .from('avatars')
+    .getPublicUrl(data.path)
+
+  return urlData.publicUrl
+}

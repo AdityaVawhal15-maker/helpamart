@@ -337,10 +337,20 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
   const ref = useRef<HTMLDivElement>(null)
   const inView = useInView(ref, { once: true })
 
-  const priceDisplay = mentor.startingPriceCents != null
-    ? mentor.startingPriceCents === 0
+  // Derive price from services array if startingPriceCents was not populated in DB
+  const derivedPrice = (() => {
+    if (mentor.startingPriceCents != null) return mentor.startingPriceCents
+    if (!Array.isArray(mentor.services) || mentor.services.length === 0) return null
+    const prices = mentor.services
+      .map(s => typeof s.priceCents === 'number' ? s.priceCents : null)
+      .filter((p): p is number => p !== null)
+    return prices.length > 0 ? Math.min(...prices) : null
+  })()
+
+  const priceDisplay = derivedPrice != null
+    ? derivedPrice === 0
       ? 'Free'
-      : `From $${(mentor.startingPriceCents / 100).toFixed(0)}`
+      : `From ₹${Math.round(derivedPrice / 100)}`
     : null
 
   return (

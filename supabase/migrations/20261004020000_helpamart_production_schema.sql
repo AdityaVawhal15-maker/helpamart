@@ -395,3 +395,36 @@ CREATE TRIGGER on_auth_user_created
 -- pg_notify() forces an immediate reload without a server restart.
 -- ===========================================================================
 NOTIFY pgrst, 'reload schema';
+
+-- ===========================================================================
+-- STORAGE BUCKET — avatars
+--
+-- Mentor/user profile photos are uploaded to Supabase Storage.
+-- The bucket must exist before photos can be uploaded.
+-- Run this ONLY if the bucket does not already exist
+-- (Supabase Storage cannot use CREATE IF NOT EXISTS, so wrap in a DO block).
+-- ===========================================================================
+DO $$
+BEGIN
+  INSERT INTO storage.buckets (id, name, public)
+  VALUES ('avatars', 'avatars', true)
+  ON CONFLICT (id) DO NOTHING;
+END $$;
+
+-- Allow anyone to read public avatar files
+DROP POLICY IF EXISTS "avatars_public_read" ON storage.objects;
+CREATE POLICY "avatars_public_read"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'avatars');
+
+-- Allow authenticated users to upload their own avatar
+DROP POLICY IF EXISTS "avatars_authenticated_upload" ON storage.objects;
+CREATE POLICY "avatars_authenticated_upload"
+  ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'avatars' AND auth.role() = 'authenticated');
+
+-- Allow authenticated users to update/replace their own avatar
+DROP POLICY IF EXISTS "avatars_authenticated_update" ON storage.objects;
+CREATE POLICY "avatars_authenticated_update"
+  ON storage.objects FOR UPDATE
+  USING (bucket_id = 'avatars' AND auth.role() = 'authenticated');

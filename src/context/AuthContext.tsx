@@ -433,6 +433,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const merged: Mentor = { ...existing, ...mentorUpdates }
 
+    // Compute derived fields from the services array so the card displays correct pricing
+    if (Array.isArray(merged.services) && merged.services.length > 0) {
+      const prices = merged.services
+        .map(s => typeof s.priceCents === 'number' ? s.priceCents : null)
+        .filter((p): p is number => p !== null)
+      if (prices.length > 0) {
+        merged.startingPriceCents = Math.min(...prices)
+      }
+      // Set availability_preview from the first active service duration as a simple label
+      if (!merged.availabilityPreview && merged.services[0]?.title) {
+        merged.availabilityPreview = merged.services[0].title
+      }
+    }
+
     // Save to local device storage
     try {
       localStorage.setItem(`${MENTOR_KEY_PREFIX}${user.id}`, JSON.stringify(merged))
@@ -474,6 +488,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         timezone: merged.timezone,
         categories: merged.categories,
         skills: merged.skills,
+        services: merged.services,
+        starting_price_cents: merged.startingPriceCents ?? null,
+        availability_preview: merged.availabilityPreview ?? null,
         updated_at: new Date().toISOString(),
       }
 

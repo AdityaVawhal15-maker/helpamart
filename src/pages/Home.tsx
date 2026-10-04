@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, useInView, AnimatePresence } from 'framer-motion'
-import { Compass, MessageCircle, Users, ArrowRight, Star, Briefcase, GraduationCap, Zap, Heart, Building2, Globe, ChevronRight } from 'lucide-react'
+import { Compass, MessageCircle, Users, ArrowRight, Star, Briefcase, GraduationCap, Zap, Heart, Building2, Globe, ChevronRight, Loader2 } from 'lucide-react'
 import { HERO_PILLS, CATEGORIES } from '@/data/taxonomy'
-import { api } from '@/lib/api'
+import { supabase } from '@/lib/supabase'
 import type { Mentor } from '@/types'
 import StoriesSection from '@/components/StoriesSection'
 import CommunityHomePreview from '@/components/CommunityHomePreview'
@@ -98,26 +98,100 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
 
 export default function Home() {
   const [mentors, setMentors] = useState<Mentor[]>([])
+  const [mentorsLoading, setMentorsLoading] = useState(true)
+  const [mentorsError, setMentorsError] = useState<string | null>(null)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [heroLoaded, setHeroLoaded] = useState(false)
 
   const heroRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    api<{ mentors: Mentor[] }>('/api/mentors')
-      .then(d => {
-        if (Array.isArray(d?.mentors)) {
-          setMentors(d.mentors)
-        } else {
-          setMentors([])
-        }
-      })
-      .catch(() => {
-        setMentors([])
-      })
     // Trigger hero animation
     const timer = setTimeout(() => setHeroLoaded(true), 100)
     return () => clearTimeout(timer)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setMentorsLoading(true)
+    setMentorsError(null)
+
+    async function fetchMentors() {
+      try {
+        const { data, error } = await supabase
+          .from('mentors')
+          .select('*')
+          .eq('status', 'published')
+          .order('published_at', { ascending: false })
+          .limit(8)
+
+        if (cancelled) return
+
+        if (error) {
+          console.error('[Home] Supabase mentors error:', error)
+          setMentorsError(error.message)
+          setMentors([])
+          return
+        }
+
+        if (!Array.isArray(data)) { setMentors([]); return }
+
+        // Reuse the same mapping logic as FindMentor
+        const results: Mentor[] = data.map((row: any) => {
+          function parseArr(val: any): any[] {
+            if (Array.isArray(val)) return val
+            if (typeof val === 'string') { try { return JSON.parse(val) } catch { return [] } }
+            return []
+          }
+          const services = parseArr(row.services)
+          const prices = services
+            .map((s: any) => (typeof s.priceCents === 'number' ? s.priceCents : null))
+            .filter((p: any): p is number => p !== null)
+          return {
+            id: row.id,
+            slug: row.slug,
+            name: row.name || '',
+            role: row.role || '',
+            company: row.company || '',
+            location: row.location || '',
+            intro: row.intro || '',
+            about: row.about || '',
+            photoUrl: row.photo_url || null,
+            languages: parseArr(row.languages),
+            yearsExperience: row.years_experience ?? null,
+            linkedinUrl: row.linkedin_url || null,
+            websiteUrl: row.website_url || null,
+            education: parseArr(row.education),
+            companies: parseArr(row.companies),
+            achievements: parseArr(row.achievements),
+            status: row.status || 'published',
+            timezone: row.timezone || 'UTC',
+            bufferMinutes: row.buffer_minutes ?? 15,
+            advanceDays: row.advance_days ?? 30,
+            minNoticeHours: row.min_notice_hours ?? 24,
+            maxBookingsPerDay: row.max_bookings_per_day ?? 4,
+            categories: parseArr(row.categories),
+            skills: parseArr(row.skills),
+            services,
+            // Derive startingPriceCents live from services if DB column is null
+            startingPriceCents: row.starting_price_cents ?? (prices.length > 0 ? Math.min(...prices) : null),
+            availabilityPreview: row.availability_preview ?? null,
+          }
+        })
+
+        setMentors(results)
+      } catch (err: any) {
+        if (cancelled) return
+        console.error('[Home] Unexpected mentors fetch error:', err)
+        setMentorsError(err?.message || 'Failed to load mentors')
+        setMentors([])
+      } finally {
+        if (!cancelled) setMentorsLoading(false)
+      }
+    }
+
+    fetchMentors()
+    return () => { cancelled = true }
   }, [])
 
   const safeMentors = Array.isArray(mentors) ? mentors : []
@@ -409,7 +483,29 @@ export default function Home() {
 
           {/* Mentor grid / empty state */}
           <AnimatePresence mode="wait">
-            {safeMentors.length === 0 ? (
+            {mentorsLoading ? (
+              <motion.div
+                key="loading-direction"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex items-center justify-center py-20"
+              >
+                <Loader2 className="h-6 w-6 animate-spin text-gold" />
+              </motion.div>
+            ) : mentorsError ? (
+              <motion.div
+                key="error-direction"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ duration: 0.4 }}
+                className="text-center py-16 border border-grey-soft rounded-2xl bg-ivory-light"
+              >
+                <p className="text-sm text-grey mb-2">Could not load mentors right now.</p>
+                <p className="text-xs text-grey/50 font-mono">{mentorsError}</p>
+              </motion.div>
+            ) : safeMentors.length === 0 ? (
               <motion.div
                 key="empty-direction"
                 initial={{ opacity: 0, y: 12 }}
@@ -667,10 +763,20 @@ function AbstractAvatarCluster() {
 }
 
 function HomeMentorCard({ mentor }: { mentor: Mentor }) {
-  const priceDisplay = mentor.startingPriceCents
-    ? mentor.startingPriceCents === 0
+  // Derive price from services array if startingPriceCents was not populated in DB
+  const derivedPrice = (() => {
+    if (mentor.startingPriceCents != null) return mentor.startingPriceCents
+    if (!Array.isArray(mentor.services) || mentor.services.length === 0) return null
+    const prices = mentor.services
+      .map((s: any) => typeof s.priceCents === 'number' ? s.priceCents : null)
+      .filter((p: any): p is number => p !== null)
+    return prices.length > 0 ? Math.min(...prices) : null
+  })()
+
+  const priceDisplay = derivedPrice != null
+    ? derivedPrice === 0
       ? 'Free'
-      : `From $${(mentor.startingPriceCents / 100).toFixed(0)}`
+      : `From ₹${Math.round(derivedPrice / 100)}`
     : null
 
   return (

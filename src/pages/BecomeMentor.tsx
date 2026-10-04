@@ -7,6 +7,7 @@ import {
   Sparkles, MapPin, ExternalLink, Linkedin, Check
 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { uploadProfilePhoto } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 
@@ -608,6 +609,7 @@ function StepIntroduce({
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const { toast } = useToast()
+  const { user } = useAuth()
 
   // Custom "Other" language handling
   const [otherActive, setOtherActive] = useState(false)
@@ -652,10 +654,11 @@ function StepIntroduce({
   async function uploadPhoto(file: File) {
     setUploading(true)
     try {
-      const fd = new FormData()
-      fd.append('photo', file)
-      const res = await api<{ url: string }>('/api/uploads/photo', { method: 'POST', body: fd })
-      setPhotoUrl(res.url)
+      // Use Supabase Storage for permanent cross-session URLs.
+      // Falls back to a blob URL (session-only) if Storage is unavailable.
+      const userId = user?.id || `anon-${Date.now()}`
+      const url = await uploadProfilePhoto(file, userId)
+      setPhotoUrl(url)
       toast('Photo uploaded!', 'success')
     } catch (e: unknown) {
       toast((e as Error).message || 'Upload failed', 'error')
