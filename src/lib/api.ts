@@ -1,7 +1,5 @@
 import { supabase } from './supabase'
 import type { Mentor, User, Booking } from '@/types'
-
-const PUBLIC_MENTORS_KEY = 'helpa_public_mentors'
 const BOOKINGS_KEY = 'helpa_user_bookings'
 
 /**
@@ -251,9 +249,6 @@ async function handleClientApiFallback<T>(
 
       try {
         localStorage.setItem(`helpa_mentor_${userId}`, JSON.stringify(updatedMentor))
-        if (updatedMentor.status === 'published') {
-          savePublicMentorToRegistry(updatedMentor)
-        }
       } catch {}
 
       try {
@@ -282,7 +277,6 @@ async function handleClientApiFallback<T>(
     mentorObj.status = 'published'
     try {
       localStorage.setItem(`helpa_mentor_${userId}`, JSON.stringify(mentorObj))
-      savePublicMentorToRegistry(mentorObj)
       await supabase.auth.updateUser({
         data: { mentor_profile: mentorObj },
       })
@@ -307,37 +301,67 @@ async function handleClientApiFallback<T>(
     return { ok: true } as unknown as T
   }
 
-  // 8. /api/mentors
+  // 8. /api/mentors — query Supabase directly (shared production DB, not localStorage)
   if (path.startsWith('/api/mentors')) {
-    const publicList = getPublicMentorsRegistry()
     const cleanUrl = new URL(path, 'http://localhost')
     const slugMatch = path.match(/^\/api\/mentors\/([^/?]+)/)
+
     if (slugMatch) {
+      // Single mentor lookup by slug
       const slug = slugMatch[1]
-      const found = publicList.find((m) => m.slug === slug || m.id === slug)
-      if (found) {
-        return { mentor: found, slots: [] } as unknown as T
+      const { data, error } = await supabase
+        .from('mentors')
+        .select('*')
+        .eq('slug', slug)
+        .maybeSingle()
+
+      if (error) {
+        console.error('[API fallback] /api/mentors/:slug error:', error)
+        return { mentor: null, slots: [] } as unknown as T
       }
-      return { mentor: null, slots: [] } as unknown as T
+
+      if (!data) return { mentor: null, slots: [] } as unknown as T
+
+      const mentor = mapSupabaseMentor(data)
+      return { mentor, slots: [] } as unknown as T
     }
 
-    let filtered = publicList
-    const q = cleanUrl.searchParams.get('q')?.toLowerCase()
+    // List published mentors
+    let query = supabase
+      .from('mentors')
+      .select('*')
+      .eq('status', 'published')
+      .order('updated_at', { ascending: false })
+
     const category = cleanUrl.searchParams.get('category')
     if (category) {
-      filtered = filtered.filter((m) => m.categories?.includes(category))
+      query = query.contains('categories', [category]) as typeof query
     }
+
+    const { data, error } = await query
+
+    if (error) {
+      console.error('[API fallback] /api/mentors list error:', error)
+      // Return error object — do NOT silently return [] and mask the failure
+      throw new Error(`Could not load mentors: ${error.message}`)
+    }
+
+    let results = Array.isArray(data) ? data.map(mapSupabaseMentor) : []
+
+    const q = cleanUrl.searchParams.get('q')?.toLowerCase()
     if (q) {
-      filtered = filtered.filter(
+      results = results.filter(
         (m) =>
           m.name.toLowerCase().includes(q) ||
           m.role.toLowerCase().includes(q) ||
           m.company.toLowerCase().includes(q) ||
-          m.intro.toLowerCase().includes(q),
+          m.intro.toLowerCase().includes(q) ||
+          m.categories.some((c: string) => c.toLowerCase().includes(q)) ||
+          m.skills.some((s: string) => s.toLowerCase().includes(q)),
       )
     }
 
-    return { mentors: filtered } as unknown as T
+    return { mentors: results } as unknown as T
   }
 
   // 9. /api/bookings
@@ -392,33 +416,46 @@ async function handleClientApiFallback<T>(
   return {} as unknown as T
 }
 
-function getPublicMentorsRegistry(): Mentor[] {
-  try {
-    const raw = localStorage.getItem(PUBLIC_MENTORS_KEY)
-    if (raw) {
-      const list = JSON.parse(raw)
-      if (Array.isArray(list)) {
-        return list.map((m: any) => ({
-          ...m,
-          categories: Array.isArray(m.categories) ? m.categories : [],
-          skills: Array.isArray(m.skills) ? m.skills : [],
-          services: Array.isArray(m.services) ? m.services : [],
-        }))
-      }
+/**
+ * Map a raw Supabase mentors table row to the frontend Mentor type.
+ * Handles both JSON-string columns (legacy) and native array/jsonb columns.
+ */
+function mapSupabaseMentor(row: any): Mentor {
+  function parseArr(val: any): any[] {
+    if (Array.isArray(val)) return val
+    if (typeof val === 'string') {
+      try { return JSON.parse(val) } catch { return [] }
     }
-  } catch {}
-  return []
-}
+    return []
+  }
 
-function savePublicMentorToRegistry(mentor: Mentor) {
-  try {
-    const list = getPublicMentorsRegistry()
-    const idx = list.findIndex((m) => m.id === mentor.id || m.slug === mentor.slug)
-    if (idx >= 0) {
-      list[idx] = mentor
-    } else {
-      list.unshift(mentor)
-    }
-    localStorage.setItem(PUBLIC_MENTORS_KEY, JSON.stringify(list))
-  } catch {}
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name || '',
+    role: row.role || '',
+    company: row.company || '',
+    location: row.location || '',
+    intro: row.intro || '',
+    about: row.about || '',
+    photoUrl: row.photo_url || null,
+    languages: parseArr(row.languages),
+    yearsExperience: row.years_experience ?? null,
+    linkedinUrl: row.linkedin_url || null,
+    websiteUrl: row.website_url || null,
+    education: parseArr(row.education),
+    companies: parseArr(row.companies),
+    achievements: parseArr(row.achievements),
+    status: row.status || 'draft',
+    timezone: row.timezone || 'UTC',
+    bufferMinutes: row.buffer_minutes ?? 15,
+    advanceDays: row.advance_days ?? 30,
+    minNoticeHours: row.min_notice_hours ?? 24,
+    maxBookingsPerDay: row.max_bookings_per_day ?? 4,
+    categories: parseArr(row.categories),
+    skills: parseArr(row.skills),
+    services: parseArr(row.services),
+    startingPriceCents: row.starting_price_cents ?? null,
+    availabilityPreview: row.availability_preview ?? null,
+  }
 }

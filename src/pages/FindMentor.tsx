@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { motion, AnimatePresence, useInView } from 'framer-motion'
-import { Search, SlidersHorizontal, X, Users, ArrowRight, Star, Briefcase, GraduationCap, Zap, Heart, Building2, Globe, MessageCircle } from 'lucide-react'
-import { api } from '@/lib/api'
+import { Search, SlidersHorizontal, X, Users, ArrowRight, Star, Briefcase, GraduationCap, Zap, Heart, Building2, Globe, MessageCircle, AlertCircle } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 import { MentorCardSkeleton } from '@/components/ui/LoadingSkeleton'
 import { CATEGORIES } from '@/data/taxonomy'
 import type { Mentor } from '@/types'
@@ -26,6 +26,7 @@ export default function FindMentor() {
   const [params, setParams] = useSearchParams()
   const [mentors, setMentors] = useState<Mentor[]>([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
   const [searchInput, setSearchInput] = useState(params.get('q') || '')
   const [activeCategory, setActiveCategory] = useState(params.get('category') || '')
   const [showFilters, setShowFilters] = useState(false)
@@ -35,20 +36,99 @@ export default function FindMentor() {
   const category = params.get('category') || ''
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
-    const query = new URLSearchParams()
-    if (q) query.set('q', q)
-    if (category) query.set('category', category)
-    api<{ mentors: Mentor[] }>(`/api/mentors?${query}`)
-      .then(d => {
-        if (Array.isArray(d?.mentors)) {
-          setMentors(d.mentors)
-        } else {
-          setMentors([])
+    setFetchError(null)
+
+    async function fetchMentors() {
+      try {
+        // Query Supabase directly — the shared production source of truth.
+        // This works cross-browser/cross-user because Supabase is the authoritative DB.
+        let query = supabase
+          .from('mentors')
+          .select('*')
+          .eq('status', 'published')
+          .order('updated_at', { ascending: false })
+
+        if (category) {
+          // categories is stored as a JSON array in Supabase; use the contains operator
+          query = query.contains('categories', [category])
         }
-      })
-      .catch(() => setMentors([]))
-      .finally(() => setLoading(false))
+
+        const { data, error } = await query
+
+        if (cancelled) return
+
+        if (error) {
+          console.error('[FindMentor] Supabase query error:', error)
+          setFetchError(`Could not load mentors: ${error.message}`)
+          setMentors([])
+          return
+        }
+
+        if (!Array.isArray(data)) {
+          setMentors([])
+          return
+        }
+
+        // Map Supabase snake_case columns → Mentor type
+        let results: Mentor[] = data.map((row: any) => ({
+          id: row.id,
+          slug: row.slug,
+          name: row.name || '',
+          role: row.role || '',
+          company: row.company || '',
+          location: row.location || '',
+          intro: row.intro || '',
+          about: row.about || '',
+          photoUrl: row.photo_url || null,
+          languages: Array.isArray(row.languages) ? row.languages : (typeof row.languages === 'string' ? JSON.parse(row.languages || '[]') : ['English']),
+          yearsExperience: row.years_experience ?? null,
+          linkedinUrl: row.linkedin_url || null,
+          websiteUrl: row.website_url || null,
+          education: Array.isArray(row.education) ? row.education : (typeof row.education === 'string' ? JSON.parse(row.education || '[]') : []),
+          companies: Array.isArray(row.companies) ? row.companies : (typeof row.companies === 'string' ? JSON.parse(row.companies || '[]') : []),
+          achievements: Array.isArray(row.achievements) ? row.achievements : (typeof row.achievements === 'string' ? JSON.parse(row.achievements || '[]') : []),
+          status: row.status || 'published',
+          timezone: row.timezone || 'UTC',
+          bufferMinutes: row.buffer_minutes ?? 15,
+          advanceDays: row.advance_days ?? 30,
+          minNoticeHours: row.min_notice_hours ?? 24,
+          maxBookingsPerDay: row.max_bookings_per_day ?? 4,
+          categories: Array.isArray(row.categories) ? row.categories : (typeof row.categories === 'string' ? JSON.parse(row.categories || '[]') : []),
+          skills: Array.isArray(row.skills) ? row.skills : (typeof row.skills === 'string' ? JSON.parse(row.skills || '[]') : []),
+          services: Array.isArray(row.services) ? row.services : [],
+          startingPriceCents: row.starting_price_cents ?? null,
+          availabilityPreview: row.availability_preview ?? null,
+        }))
+
+        // Client-side text search filter (q)
+        if (q) {
+          const lower = q.toLowerCase()
+          results = results.filter(
+            (m) =>
+              m.name.toLowerCase().includes(lower) ||
+              m.role.toLowerCase().includes(lower) ||
+              m.company.toLowerCase().includes(lower) ||
+              m.intro.toLowerCase().includes(lower) ||
+              m.categories.some((c) => c.toLowerCase().includes(lower)) ||
+              m.skills.some((s) => s.toLowerCase().includes(lower)),
+          )
+        }
+
+        setMentors(results)
+      } catch (err: any) {
+        if (cancelled) return
+        console.error('[FindMentor] Unexpected error fetching mentors:', err)
+        setFetchError(err?.message || 'An unexpected error occurred while loading mentors.')
+        setMentors([])
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    fetchMentors()
+    return () => { cancelled = true }
   }, [q, category])
 
   const safeMentors = Array.isArray(mentors) ? mentors : []
@@ -197,7 +277,7 @@ export default function FindMentor() {
       {/* Results */}
       <div className="max-w-7xl mx-auto px-6 py-10">
         {/* Result count + active filters */}
-        {!loading && (
+        {!loading && !fetchError && (
           <div className="flex items-center gap-3 mb-6">
             <p className="text-sm text-grey">
               {safeMentors.length === 0 ? 'No mentors found' : `${safeMentors.length} mentor${safeMentors.length !== 1 ? 's' : ''}`}
@@ -223,6 +303,14 @@ export default function FindMentor() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
             {Array.from({ length: 8 }).map((_, i) => <MentorCardSkeleton key={i} />)}
           </div>
+        ) : fetchError ? (
+          <MentorFetchError message={fetchError} onRetry={() => {
+            // Re-trigger by toggling a dummy param then restoring
+            setFetchError(null)
+            setLoading(true)
+            const next = new URLSearchParams(params)
+            setParams(next)
+          }} />
         ) : safeMentors.length === 0 ? (
           <MentorEmptyState hasSearch={Boolean(q || activeCategory)} />
         ) : (
@@ -337,6 +425,29 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
   )
 }
 
+function MentorFetchError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center text-center py-24 max-w-lg mx-auto">
+      <div className="w-20 h-20 rounded-3xl bg-maroon/8 flex items-center justify-center mb-6 text-maroon">
+        <AlertCircle className="h-8 w-8" />
+      </div>
+      <h2 className="text-display-md font-display text-navy mb-3">
+        Could not load mentors
+      </h2>
+      <p className="text-grey mb-2 leading-relaxed text-sm">
+        There was a problem connecting to the database. Please try again.
+      </p>
+      <p className="text-xs text-grey/60 mb-8 font-mono">{message}</p>
+      <button
+        onClick={onRetry}
+        className="inline-flex items-center gap-2 bg-navy text-white px-7 py-3.5 rounded-xl font-semibold hover:bg-navy-mid transition-all"
+      >
+        Try Again
+      </button>
+    </div>
+  )
+}
+
 function MentorEmptyState({ hasSearch }: { hasSearch: boolean }) {
   return (
     <div className="flex flex-col items-center text-center py-24 max-w-lg mx-auto">
@@ -358,8 +469,7 @@ function MentorEmptyState({ hasSearch }: { hasSearch: boolean }) {
             Your next guide is waiting to be discovered.
           </h2>
           <p className="text-grey mb-8 leading-relaxed">
-            HELPAMART is preparing the first generation of mentors.
-            Be one of the first people to share your experience.
+            No mentors have published their profile yet. Be the first to share your experience.
           </p>
         </>
       )}

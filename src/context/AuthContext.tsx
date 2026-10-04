@@ -30,7 +30,6 @@ const AuthCtx = createContext<AuthContextValue | null>(null)
  */
 const PROFILE_KEY_PREFIX = 'helpa_profile_'
 const MENTOR_KEY_PREFIX = 'helpa_mentor_'
-const PUBLIC_MENTORS_KEY = 'helpa_public_mentors'
 const PENDING_SIGNUP_NAME_KEY = 'helpa_pending_signup_name'
 
 /**
@@ -221,19 +220,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   /**
    * Helper to ensure published mentor is visible to other users in discovery.
+   * NOTE: This updates the local device cache only. Cross-user discovery now
+   * reads from Supabase directly — see saveMentorProfile for the authoritative write.
    */
-  function syncPublicMentor(publishedMentor: Mentor) {
-    try {
-      const raw = localStorage.getItem(PUBLIC_MENTORS_KEY)
-      const list: Mentor[] = raw ? JSON.parse(raw) : []
-      const idx = list.findIndex((m) => m.id === publishedMentor.id || m.slug === publishedMentor.slug)
-      if (idx >= 0) {
-        list[idx] = publishedMentor
-      } else {
-        list.unshift(publishedMentor)
-      }
-      localStorage.setItem(PUBLIC_MENTORS_KEY, JSON.stringify(list))
-    } catch {}
+  function syncPublicMentor(_publishedMentor: Mentor) {
+    // No-op: localStorage-based public registry removed.
+    // Discovery (FindMentor.tsx) now queries supabase.from('mentors') directly.
   }
 
   /**
@@ -457,9 +449,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.warn('[AUTH] Failed to persist mentor in user_metadata:', e)
     }
 
-    // Save to Supabase DB mentors table if available
+    // Save to Supabase DB mentors table — this is the shared production source of truth
+    // that FindMentor.tsx queries for cross-user discovery.
     try {
-      await supabase.from('mentors').upsert({
+      const upsertPayload: Record<string, unknown> = {
         id: merged.id,
         user_id: user.id,
         slug: merged.slug,
@@ -482,8 +475,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         categories: merged.categories,
         skills: merged.skills,
         updated_at: new Date().toISOString(),
+      }
+
+      // Set published_at timestamp when first publishing so discovery ordering works
+      if (merged.status === 'published') {
+        upsertPayload.published_at = new Date().toISOString()
+      }
+
+      const { error: upsertError } = await supabase.from('mentors').upsert(upsertPayload, {
+        onConflict: 'id',
       })
-    } catch {}
+
+      if (upsertError) {
+        // Surface real DB failures — silent failure here means publish appears to succeed
+        // but the mentor never appears in discovery for other users.
+        console.error('[AUTH] Supabase mentors upsert failed:', upsertError)
+        throw new Error(`Profile could not be saved to the database: ${upsertError.message}`)
+      }
+    } catch (e: any) {
+      if (e?.message?.startsWith('Profile could not be saved')) {
+        throw e
+      }
+      // Log but don't block for non-critical errors (e.g. table missing in local dev)
+      console.warn('[AUTH] saveMentorProfile Supabase upsert warning:', e)
+    }
 
     if (merged.status === 'published') {
       syncPublicMentor(merged)
