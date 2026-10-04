@@ -37,18 +37,27 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
     })
 
-    // If server responded successfully or with an intentional 400/401/500 business error from Express
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || ''
+    const isJson = contentType.includes('application/json')
+    const isHtml = contentType.includes('text/html')
+
+    // If server responded successfully with JSON
+    if (res.ok && isJson) {
       const data = await res.json().catch(() => ({}))
       return data as T
     }
 
-    // If it's a 404 (standard on Vercel static hosting for /api/*), gracefully fall back
-    if (res.status === 404 && path.startsWith('/api/')) {
+    // If it's a 404 or an SPA rewrite that returned index.html for an /api/* call:
+    if ((res.status === 404 || isHtml || !isJson) && path.startsWith('/api/')) {
       const fallbackResult = await handleClientApiFallback<T>(path, init, activeUser)
       if (fallbackResult !== undefined) {
         return fallbackResult
       }
+    }
+
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}))
+      return data as T
     }
 
     const data = await res.json().catch(() => ({}))
@@ -353,13 +362,50 @@ async function handleClientApiFallback<T>(
     return { url: '/hero.jpg' } as unknown as T
   }
 
-  return undefined
+  // 11. /api/community
+  if (path.startsWith('/api/community')) {
+    if (path.includes('/stats')) {
+      return { postCount: 0, replyCount: 0, userCount: 0 } as unknown as T
+    }
+    if (path.includes('/like')) {
+      return { liked: true, likesCount: 1 } as unknown as T
+    }
+    if (path.includes('/replies') && method === 'POST') {
+      let body: any = {}
+      try {
+        body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+      } catch {}
+      return {
+        reply: {
+          id: crypto.randomUUID(),
+          authorName: activeUser?.user_metadata?.full_name || 'Community Member',
+          authorAvatar: activeUser?.user_metadata?.avatar_url || null,
+          content: body.content || '',
+          createdAt: new Date().toISOString(),
+        },
+      } as unknown as T
+    }
+    return { posts: [] } as unknown as T
+  }
+
+  // Generic safe fallback for any unhandled /api/* call in pure SPA mode
+  return {} as unknown as T
 }
 
 function getPublicMentorsRegistry(): Mentor[] {
   try {
     const raw = localStorage.getItem(PUBLIC_MENTORS_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const list = JSON.parse(raw)
+      if (Array.isArray(list)) {
+        return list.map((m: any) => ({
+          ...m,
+          categories: Array.isArray(m.categories) ? m.categories : [],
+          skills: Array.isArray(m.skills) ? m.skills : [],
+          services: Array.isArray(m.services) ? m.services : [],
+        }))
+      }
+    }
   } catch {}
   return []
 }

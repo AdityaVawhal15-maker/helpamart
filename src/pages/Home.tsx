@@ -104,15 +104,26 @@ export default function Home() {
   const heroRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    api<{ mentors: Mentor[] }>('/api/mentors').then(d => setMentors(d.mentors)).catch(() => {})
+    api<{ mentors: Mentor[] }>('/api/mentors')
+      .then(d => {
+        if (Array.isArray(d?.mentors)) {
+          setMentors(d.mentors)
+        } else {
+          setMentors([])
+        }
+      })
+      .catch(() => {
+        setMentors([])
+      })
     // Trigger hero animation
     const timer = setTimeout(() => setHeroLoaded(true), 100)
     return () => clearTimeout(timer)
   }, [])
 
+  const safeMentors = Array.isArray(mentors) ? mentors : []
   const filteredMentors = activeCategory
-    ? mentors.filter(m => m.categories.includes(activeCategory))
-    : mentors
+    ? safeMentors.filter(m => Array.isArray(m?.categories) && m.categories.includes(activeCategory))
+    : safeMentors
 
   return (
     <div className="bg-ivory min-h-screen">
@@ -398,7 +409,7 @@ export default function Home() {
 
           {/* Mentor grid / empty state */}
           <AnimatePresence mode="wait">
-            {mentors.length === 0 ? (
+            {safeMentors.length === 0 ? (
               <motion.div
                 key="empty-direction"
                 initial={{ opacity: 0, y: 12 }}
@@ -457,7 +468,7 @@ export default function Home() {
             )}
           </AnimatePresence>
 
-          {mentors.length > 0 && (
+          {safeMentors.length > 0 && (
             <FadeIn delay={0.2} className="mt-10 text-center">
               <Link
                 to="/find-mentor"
@@ -691,7 +702,7 @@ function HomeMentorCard({ mentor }: { mentor: Mentor }) {
         )}
 
         {/* Tags */}
-        {mentor.categories.length > 0 && (
+        {Array.isArray(mentor?.categories) && mentor.categories.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-3">
             {mentor.categories.slice(0, 2).map(c => (
               <span key={c} className="text-[0.6875rem] font-medium px-2.5 py-1 bg-ivory-dark rounded-full text-navy/70">

@@ -40,10 +40,18 @@ export default function FindMentor() {
     if (q) query.set('q', q)
     if (category) query.set('category', category)
     api<{ mentors: Mentor[] }>(`/api/mentors?${query}`)
-      .then(d => setMentors(d.mentors))
+      .then(d => {
+        if (Array.isArray(d?.mentors)) {
+          setMentors(d.mentors)
+        } else {
+          setMentors([])
+        }
+      })
       .catch(() => setMentors([]))
       .finally(() => setLoading(false))
   }, [q, category])
+
+  const safeMentors = Array.isArray(mentors) ? mentors : []
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault()
@@ -192,7 +200,7 @@ export default function FindMentor() {
         {!loading && (
           <div className="flex items-center gap-3 mb-6">
             <p className="text-sm text-grey">
-              {mentors.length === 0 ? 'No mentors found' : `${mentors.length} mentor${mentors.length !== 1 ? 's' : ''}`}
+              {safeMentors.length === 0 ? 'No mentors found' : `${safeMentors.length} mentor${safeMentors.length !== 1 ? 's' : ''}`}
               {q ? ` for "${q}"` : ''}
               {activeCategory ? ` in ${activeCategory}` : ''}
             </p>
@@ -215,7 +223,7 @@ export default function FindMentor() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
             {Array.from({ length: 8 }).map((_, i) => <MentorCardSkeleton key={i} />)}
           </div>
-        ) : mentors.length === 0 ? (
+        ) : safeMentors.length === 0 ? (
           <MentorEmptyState hasSearch={Boolean(q || activeCategory)} />
         ) : (
           <AnimatePresence mode="wait">
@@ -226,7 +234,7 @@ export default function FindMentor() {
               transition={{ duration: 0.4 }}
               className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5"
             >
-              {mentors.map((m, i) => (
+              {safeMentors.map((m, i) => (
                 <MentorCard key={m.id} mentor={m} index={i} />
               ))}
             </motion.div>
@@ -296,7 +304,7 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
           )}
 
           {/* Tags */}
-          {mentor.categories.length > 0 && (
+          {Array.isArray(mentor?.categories) && mentor.categories.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-3">
               {mentor.categories.slice(0, 3).map(c => (
                 <span key={c} className="text-[0.6875rem] font-medium px-2.5 py-1 bg-ivory-dark rounded-full text-navy/70">
@@ -307,7 +315,7 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
           )}
 
           {/* Languages */}
-          {mentor.languages.length > 0 && (
+          {Array.isArray(mentor?.languages) && mentor.languages.length > 0 && (
             <p className="text-xs text-grey mt-2">{mentor.languages.slice(0, 2).join(' · ')}</p>
           )}
 

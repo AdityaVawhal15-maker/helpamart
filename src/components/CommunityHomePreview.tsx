@@ -109,10 +109,20 @@ export default function CommunityHomePreview() {
 
   useEffect(() => {
     api<{ posts: CommunityPost[] }>('/api/community?limit=3')
-      .then(d => setPosts(d.posts.slice(0, 3)))
-      .catch(() => {})
+      .then(d => {
+        if (Array.isArray(d?.posts)) {
+          setPosts(d.posts.slice(0, 3))
+        } else {
+          setPosts([])
+        }
+      })
+      .catch(() => {
+        setPosts([])
+      })
       .finally(() => setLoading(false))
   }, [])
+
+  const safePosts = Array.isArray(posts) ? posts : []
 
   return (
     <section className="bg-white py-24 border-y border-grey-soft">
@@ -163,7 +173,7 @@ export default function CommunityHomePreview() {
               <div key={i} className="skeleton rounded-2xl h-48" />
             ))}
           </div>
-        ) : posts.length === 0 ? (
+        ) : safePosts.length === 0 ? (
           <FadeIn delay={0.2}>
             <div className="text-center py-16 border border-grey-soft rounded-2xl bg-ivory-light">
               <div className="w-14 h-14 rounded-2xl bg-gold/10 flex items-center justify-center mx-auto mb-4 text-gold">
@@ -182,14 +192,14 @@ export default function CommunityHomePreview() {
           </FadeIn>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {posts.map((post, i) => (
+            {safePosts.map((post, i) => (
               <MiniPostCard key={post.id} post={post} index={i} />
             ))}
           </div>
         )}
 
         {/* Bottom CTA */}
-        {posts.length > 0 && (
+        {safePosts.length > 0 && (
           <FadeIn delay={0.3} className="mt-10 text-center">
             <Link
               to="/community"
