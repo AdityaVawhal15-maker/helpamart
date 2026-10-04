@@ -98,6 +98,7 @@ export default function FindMentor() {
           categories: Array.isArray(row.categories) ? row.categories : (typeof row.categories === 'string' ? JSON.parse(row.categories || '[]') : []),
           skills: Array.isArray(row.skills) ? row.skills : (typeof row.skills === 'string' ? JSON.parse(row.skills || '[]') : []),
           services: Array.isArray(row.services) ? row.services : [],
+          availability: Array.isArray(row.availability) ? row.availability : (typeof row.availability === 'string' ? (() => { try { return JSON.parse(row.availability) } catch { return [] } })() : []),
           startingPriceCents: row.starting_price_cents ?? null,
           availabilityPreview: row.availability_preview ?? null,
         }))
@@ -369,14 +370,26 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
               alt={mentor.name}
               className="mentor-photo w-full h-full object-cover transition-transform duration-500"
               loading="lazy"
+              onError={(e) => {
+                // Hide broken image; sibling fallback div will show
+                const img = e.currentTarget
+                img.style.display = 'none'
+                const parent = img.parentElement
+                if (parent) {
+                  const fallback = parent.querySelector('.photo-fallback') as HTMLElement | null
+                  if (fallback) fallback.style.display = 'flex'
+                }
+              }}
             />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-ivory-dark to-grey-soft">
-              <span className="text-5xl font-display text-grey-mid">
-                {mentor.name.slice(0, 1)}
-              </span>
-            </div>
-          )}
+          ) : null}
+          <div
+            className="photo-fallback w-full h-full items-center justify-center bg-gradient-to-br from-ivory-dark to-grey-soft"
+            style={{ display: mentor.photoUrl ? 'none' : 'flex' }}
+          >
+            <span className="text-5xl font-display text-grey-mid">
+              {mentor.name.slice(0, 1)}
+            </span>
+          </div>
           {/* Availability badge */}
           {mentor.availabilityPreview && (
             <div className="absolute bottom-3 left-3">

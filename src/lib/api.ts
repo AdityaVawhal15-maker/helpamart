@@ -243,6 +243,7 @@ async function handleClientApiFallback<T>(
         categories: body.categories || existing?.categories || [],
         skills: body.skills || existing?.skills || [],
         services: body.services || existing?.services || [],
+        availability: body.availability || existing?.availability || [],
         startingPriceCents: existing?.startingPriceCents || null,
         availabilityPreview: existing?.availabilityPreview || null,
       }
@@ -455,6 +456,7 @@ function mapSupabaseMentor(row: any): Mentor {
     categories: parseArr(row.categories),
     skills: parseArr(row.skills),
     services: parseArr(row.services),
+    availability: parseArr(row.availability),
     startingPriceCents: row.starting_price_cents ?? null,
     availabilityPreview: row.availability_preview ?? null,
   }

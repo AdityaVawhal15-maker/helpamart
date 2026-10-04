@@ -13,6 +13,13 @@ export type User = {
   company?: string
 }
 
+export type AvailabilityRule = {
+  weekday: number
+  startTime: string
+  endTime: string
+  enabled: boolean
+}
+
 export type MentorService = {
   id?: string
   title: string
@@ -50,17 +57,11 @@ export type Mentor = {
   categories: string[]
   skills: string[]
   services: MentorService[]
+  availability: AvailabilityRule[]
   startingPriceCents: number | null
   availabilityPreview: string | null
   rating?: number
   reviewCount?: number
-}
-
-export type AvailabilityRule = {
-  weekday: number
-  startTime: string
-  endTime: string
-  enabled: boolean
 }
 
 export type Booking = {

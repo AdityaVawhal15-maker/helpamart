@@ -199,6 +199,9 @@ export default function BecomeMentor() {
       if (mentor.linkedinUrl) setLinkedinUrl(mentor.linkedinUrl)
       if (mentor.websiteUrl) setWebsiteUrl(mentor.websiteUrl)
       if (mentor.timezone) setTimezone(mentor.timezone)
+      if (Array.isArray(mentor.availability) && mentor.availability.length > 0) {
+        setAvailability(mentor.availability)
+      }
       if (mentor.services?.length) {
         setServices(
           mentor.services.map((s) => ({
@@ -285,6 +288,7 @@ export default function BecomeMentor() {
         timezone,
         categories,
         skills,
+        availability,
         services: services.map((s) => ({
           title: s.title,
           description: s.description || '',

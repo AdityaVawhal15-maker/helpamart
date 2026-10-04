@@ -173,6 +173,7 @@ export default function Home() {
             categories: parseArr(row.categories),
             skills: parseArr(row.skills),
             services,
+            availability: parseArr(row.availability),
             // Derive startingPriceCents live from services if DB column is null
             startingPriceCents: row.starting_price_cents ?? (prices.length > 0 ? Math.min(...prices) : null),
             availabilityPreview: row.availability_preview ?? null,

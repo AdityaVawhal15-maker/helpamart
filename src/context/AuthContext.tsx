@@ -193,9 +193,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           maxBookingsPerDay: data.max_bookings_per_day ?? 4,
           categories: data.categories || [],
           skills: data.skills || [],
-          services: [],
-          startingPriceCents: null,
-          availabilityPreview: null,
+          services: Array.isArray(data.services) ? data.services : [],
+          availability: Array.isArray(data.availability) ? data.availability : [],
+          startingPriceCents: data.starting_price_cents ?? null,
+          availabilityPreview: data.availability_preview ?? null,
         }
       }
     } catch {}
@@ -427,13 +428,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       categories: [],
       skills: [],
       services: [],
+      availability: [],
       startingPriceCents: null,
       availabilityPreview: null,
     }
 
     const merged: Mentor = { ...existing, ...mentorUpdates }
 
-    // Compute derived fields from the services array so the card displays correct pricing
+    // Compute derived fields from services + availability
     if (Array.isArray(merged.services) && merged.services.length > 0) {
       const prices = merged.services
         .map(s => typeof s.priceCents === 'number' ? s.priceCents : null)
@@ -441,10 +443,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (prices.length > 0) {
         merged.startingPriceCents = Math.min(...prices)
       }
-      // Set availability_preview from the first active service duration as a simple label
-      if (!merged.availabilityPreview && merged.services[0]?.title) {
-        merged.availabilityPreview = merged.services[0].title
+    }
+
+    // Compute availability_preview from the actual enabled availability rules.
+    // This drives the "● Available" badge on mentor cards.
+    const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    const enabledRules = Array.isArray(merged.availability)
+      ? merged.availability.filter((r: any) => r.enabled)
+      : []
+
+    if (enabledRules.length > 0) {
+      // Format: "Mon–Fri 9am–5pm" or first enabled day+time
+      const days = enabledRules.map((r: any) => DAY_ABBR[r.weekday])
+      const firstRule = enabledRules[0]
+      const formatHour = (t: string) => {
+        const [h, m] = t.split(':').map(Number)
+        const ampm = h >= 12 ? 'pm' : 'am'
+        const hour = h % 12 || 12
+        return m === 0 ? `${hour}${ampm}` : `${hour}:${String(m).padStart(2, '0')}${ampm}`
       }
+      merged.availabilityPreview = `${days.join(', ')} · ${formatHour(firstRule.startTime)}–${formatHour(firstRule.endTime)}`
+    } else if (!merged.availabilityPreview && Array.isArray(merged.services) && merged.services[0]?.title) {
+      // Fallback to first service name if no availability rules set yet
+      merged.availabilityPreview = merged.services[0].title
     }
 
     // Save to local device storage
@@ -489,6 +510,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         categories: merged.categories,
         skills: merged.skills,
         services: merged.services,
+        availability: Array.isArray(merged.availability) ? merged.availability : [],
         starting_price_cents: merged.startingPriceCents ?? null,
         availability_preview: merged.availabilityPreview ?? null,
         updated_at: new Date().toISOString(),

@@ -131,24 +131,34 @@ export async function signOutSupabase() {
  */
 export async function uploadProfilePhoto(file: File, userId: string): Promise<string> {
   const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg'
-  const filename = `${userId}/${Date.now()}.${ext}`
+  // Sanitize userId so path has no special characters that could break the URL
+  const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_')
+  const filename = `${safeUserId}/${Date.now()}.${ext}`
 
   const { data, error } = await supabase.storage
     .from('avatars')
     .upload(filename, file, {
       upsert: true,
       contentType: file.type || 'image/jpeg',
+      cacheControl: '3600',
     })
 
   if (error) {
-    console.error('[Storage] uploadProfilePhoto error:', error)
-    // Graceful fallback — blob URL is device-local but at least shows image in current session
-    return URL.createObjectURL(file)
+    console.error('[Storage] uploadProfilePhoto error:', error.message)
+    // Throw so the caller can show a real error message — a blob: URL would silently
+    // break after the page reloads, which is worse than surfacing the failure now.
+    throw new Error(`Photo upload failed: ${error.message}`)
   }
 
+  // data.path is the full path returned by Supabase after upload (same as filename above)
   const { data: urlData } = supabase.storage
     .from('avatars')
     .getPublicUrl(data.path)
 
-  return urlData.publicUrl
+  const publicUrl = urlData.publicUrl
+  if (!publicUrl || publicUrl.includes('undefined')) {
+    throw new Error('Could not get a public URL for the uploaded photo. Check the avatars bucket is public.')
+  }
+
+  return publicUrl
 }

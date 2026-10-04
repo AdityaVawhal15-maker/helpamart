@@ -89,6 +89,7 @@ export default function MentorProfile() {
           categories: parseArr(data.categories),
           skills: parseArr(data.skills),
           services,
+          availability: parseArr(data.availability),
           startingPriceCents: data.starting_price_cents ?? (prices.length > 0 ? Math.min(...prices) : null),
           availabilityPreview: data.availability_preview ?? null,
         }
@@ -106,24 +107,97 @@ export default function MentorProfile() {
     loadMentor()
   }, [slug])
 
-  // Availability slots are computed server-side by the Express API when running locally.
-  // In production (Vercel SPA), we derive a simplified slot view from the stored services.
+  // Generate booking slots from stored availability rules (runs client-side in production SPA).
   useEffect(() => {
     if (!mentor || !selectedService) return
     setSlotLoading(true)
-    // Generate a simple 14-day availability preview from the mentor's stored availability JSONB.
-    // The full slot computation runs in the Express server; here we produce a reasonable preview.
+
     const timezone = mentor.timezone || 'UTC'
     const durationMin = selectedService.durationMinutes || 30
-    const slots: { start: string; end: string }[] = []
+    const bufferMin = mentor.bufferMinutes ?? 15
+    const advanceDays = mentor.advanceDays ?? 30
+    const minNoticeHours = mentor.minNoticeHours ?? 24
 
-    // Use availability rules stored in the services/availability field if available
-    // For a production SPA deployment without the Express server, we derive placeholder
-    // availability from the mentor's configured schedule (stored as JSONB in Supabase).
-    // Since the Express server handles real slot generation, we return empty slots here
-    // so the booking calendar shows "No availability set yet" rather than fake data.
-    // When the Express server is running, the /api/mentors/:slug/availability endpoint
-    // provides real generated slots — that path is used in the BookingFlow page.
+    const rules: { weekday: number; startTime: string; endTime: string; enabled: boolean }[] =
+      Array.isArray(mentor.availability) ? mentor.availability.filter((r: any) => r.enabled) : []
+
+    if (rules.length === 0) {
+      setSlotData({ timezone, slots: [], durationMinutes: durationMin })
+      setSlotLoading(false)
+      return
+    }
+
+    // Build slots for the next `advanceDays` days
+    const slots: { start: string; end: string }[] = []
+    const now = Date.now()
+    const minStart = now + minNoticeHours * 60 * 60 * 1000
+    const maxStart = now + advanceDays * 24 * 60 * 60 * 1000
+
+    for (let d = 0; d < advanceDays; d++) {
+      const day = new Date()
+      day.setHours(0, 0, 0, 0)
+      day.setDate(day.getDate() + d)
+      const weekday = day.getDay()
+      const dateStr = day.toISOString().slice(0, 10)
+
+      const dayRules = rules.filter(r => r.weekday === weekday)
+      for (const rule of dayRules) {
+        const [sh, sm] = rule.startTime.split(':').map(Number)
+        const [eh, em] = rule.endTime.split(':').map(Number)
+        let cursor = sh * 60 + sm
+        const endMinutes = eh * 60 + em
+
+        while (cursor + durationMin <= endMinutes) {
+          const startH = String(Math.floor(cursor / 60)).padStart(2, '0')
+          const startM = String(cursor % 60).padStart(2, '0')
+          const endMin = cursor + durationMin
+          const endH = String(Math.floor(endMin / 60)).padStart(2, '0')
+          const endMm = String(endMin % 60).padStart(2, '0')
+
+          // Build ISO string treating the time as the mentor's local timezone
+          // We approximate: parse as if UTC date + local time offset
+          const startIso = `${dateStr}T${startH}:${startM}:00`
+          const endIso = `${dateStr}T${endH}:${endMm}:00`
+
+          // Use Intl to get the actual UTC timestamp for the mentor's timezone
+          const toUtcMs = (dateTimeStr: string) => {
+            // Create a Date from a dateTime string interpreted in the mentor's timezone
+            const tempDate = new Date(dateTimeStr + 'Z') // parse as UTC first
+            const formatter = new Intl.DateTimeFormat('en-US', {
+              timeZone: timezone,
+              year: 'numeric', month: '2-digit', day: '2-digit',
+              hour: '2-digit', minute: '2-digit', second: '2-digit',
+              hour12: false,
+            })
+            // Get the timezone offset by comparing UTC time to local interpretation
+            const parts = Object.fromEntries(
+              formatter.formatToParts(tempDate).map(p => [p.type, p.value])
+            )
+            const localMs = Date.UTC(
+              Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+              Number(parts.hour) % 24, Number(parts.minute), Number(parts.second)
+            )
+            const offset = localMs - tempDate.getTime()
+            // Now parse the actual intended local time
+            const intendedLocal = new Date(dateTimeStr + 'Z').getTime()
+            return intendedLocal - offset
+          }
+
+          const startMs = toUtcMs(startIso)
+          const endMs = toUtcMs(endIso)
+
+          if (startMs >= minStart && startMs <= maxStart) {
+            slots.push({
+              start: new Date(startMs).toISOString(),
+              end: new Date(endMs).toISOString(),
+            })
+          }
+
+          cursor += durationMin + bufferMin
+        }
+      }
+    }
+
     setSlotData({ timezone, slots, durationMinutes: durationMin })
     setSlotLoading(false)
   }, [mentor, selectedService])
@@ -180,16 +254,31 @@ export default function MentorProfile() {
             transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
             className="flex flex-col sm:flex-row gap-8 items-start"
           >
-            {/* Photo */}
-            <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-3xl overflow-hidden bg-grey-soft shrink-0 shadow-soft">
-              {mentor.photoUrl ? (
-                <img src={mentor.photoUrl} alt={mentor.name} className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-5xl font-display text-grey">
-                  {mentor.name.slice(0, 1)}
-                </div>
-              )}
-            </div>
+      {/* Photo */}
+      <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-3xl overflow-hidden bg-grey-soft shrink-0 shadow-soft">
+        {mentor.photoUrl ? (
+          <img
+            src={mentor.photoUrl}
+            alt={mentor.name}
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              const img = e.currentTarget
+              img.style.display = 'none'
+              const parent = img.parentElement
+              if (parent) {
+                const fallback = parent.querySelector('.photo-fallback') as HTMLElement | null
+                if (fallback) fallback.style.display = 'flex'
+              }
+            }}
+          />
+        ) : null}
+        <div
+          className="photo-fallback w-full h-full items-center justify-center text-5xl font-display text-grey"
+          style={{ display: mentor.photoUrl ? 'none' : 'flex' }}
+        >
+          {mentor.name.slice(0, 1)}
+        </div>
+      </div>
 
             {/* Info */}
             <div className="flex-1 min-w-0">
