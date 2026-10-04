@@ -1,0 +1,32 @@
+# Supabase project configuration for helpamart.com
+# Generated for Supabase CLI — used only for migrations and local dev tooling.
+# The browser-side publishable key is in .env (VITE_SUPABASE_PUBLISHABLE_KEY).
+# The service-role key must NEVER be committed here.
+
+[api]
+# PostgREST settings — only relevant for local dev (supabase start)
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
+
+[auth]
+enabled = true
+site_url = "https://www.helpamart.com"
+additional_redirect_urls = ["http://localhost:5173", "https://helpamart.com"]
+jwt_expiry = 3600
+enable_signup = true
