@@ -406,6 +406,18 @@ body {
   transition: background-color 5000s ease-in-out 0s;
 }
 
+/* Prevent browser credential/autofill icon from overlapping typed text */
+input[type="email"].field-input,
+input[type="email"] {
+  /* Push text away from right edge where browser icon appears */
+  padding-right: 3rem !important;
+}
+
+/* Chrome: hide the autofill strong password icon if it conflicts */
+input::-webkit-credentials-auto-fill-button {
+  margin-left: 4px;
+}
+
 .field-textarea {
   resize: vertical;
   min-height: 6rem;
