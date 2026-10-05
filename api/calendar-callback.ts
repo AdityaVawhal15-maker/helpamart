@@ -89,6 +89,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const db = adminSupabase()
     const expiry = tokens.expiry_date ? new Date(tokens.expiry_date).toISOString() : null
 
+    // Ensure a profiles row exists for this user — the FK calendar_connections.user_id
+    // REFERENCES profiles(id). If the trigger that auto-creates profiles on auth.users
+    // insert hasn't fired yet (race), the upsert will fail with a FK violation.
+    try {
+      await db.from('profiles').upsert(
+        { id: userId, full_name: '', email: null, updated_at: new Date().toISOString() },
+        { onConflict: 'id', ignoreDuplicates: true },
+      )
+    } catch {} // tolerate — row may already exist
+
     // Upsert — each mentor has at most one calendar connection row (UNIQUE on user_id)
     const { error: upsertErr } = await db.from('calendar_connections').upsert(
       {

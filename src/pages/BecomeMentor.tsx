@@ -1695,17 +1695,25 @@ function CalendarConnectCard() {
     async function check() {
       try {
         const { supabase } = await import('@/lib/supabase')
-        const { data } = await supabase
-          .from('calendar_connections')
-          .select('status, account_email')
-          .eq('user_id', user!.id)
-          .maybeSingle()
+        const { data: sessionData } = await supabase.auth.getSession()
+        const token = sessionData?.session?.access_token
         if (cancelled) return
-        if (data?.status === 'connected') {
-          setCalStatus('connected')
-          setCalEmail(data.account_email ?? null)
-        } else {
-          setCalStatus('disconnected')
+        if (!token) { setCalStatus('disconnected'); return }
+
+        // Use the secure server endpoint — avoids RLS race on the anon client
+        const resp = await fetch('/api/calendar-status', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (cancelled) return
+        if (!resp.ok) { setCalStatus('disconnected'); return }
+        const json = await resp.json() as { connected: boolean; status: string; accountEmail: string | null }
+        if (!cancelled) {
+          if (json.connected) {
+            setCalStatus('connected')
+            setCalEmail(json.accountEmail ?? null)
+          } else {
+            setCalStatus('disconnected')
+          }
         }
       } catch {
         if (!cancelled) setCalStatus('disconnected')

@@ -50,17 +50,33 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
 // ─── Google Calendar helper ───────────────────────────────────────────────────
 async function getCalendarClient(mentorUserId: string, db: ReturnType<typeof adminSupabase>) {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-    return null // Calendar not configured
+    console.log(`[BOOK] Google Calendar env vars not set — skipping calendar for mentor ${mentorUserId.slice(0, 8)}`)
+    return null
   }
 
-  const { data: conn } = await db
+  const { data: conn, error: connErr } = await db
     .from('calendar_connections')
     .select('access_token, refresh_token, expiry, status')
     .eq('user_id', mentorUserId)
     .eq('status', 'connected')
     .maybeSingle()
 
-  if (!conn?.refresh_token && !conn?.access_token) return null
+  if (connErr) {
+    console.error(`[BOOK] calendar_connections query error for mentor ${mentorUserId.slice(0, 8)}:`, connErr.message)
+    return null
+  }
+
+  if (!conn) {
+    console.log(`[BOOK] No connected calendar_connections row for mentor ${mentorUserId.slice(0, 8)} — mentor needs to connect Google Calendar`)
+    return null
+  }
+
+  if (!conn.refresh_token && !conn.access_token) {
+    console.warn(`[BOOK] calendar_connections row exists for mentor ${mentorUserId.slice(0, 8)} but both tokens are null — needs reconnect`)
+    return null
+  }
+
+  console.log(`[BOOK] Calendar connection found for mentor ${mentorUserId.slice(0, 8)}, status=${conn.status}, hasRefreshToken=${!!conn.refresh_token}`)
 
   const oauth2 = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,

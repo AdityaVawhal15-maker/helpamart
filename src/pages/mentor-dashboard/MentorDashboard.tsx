@@ -57,18 +57,25 @@ export default function MentorDashboard() {
       .then((d) => setStats({ ...d, views: 0 }))
       .catch(() => {})
 
-    // Fetch calendar connection status from Supabase
+    // Fetch calendar connection status from the secure server endpoint.
+    // This uses the service role on the backend — bypasses RLS race conditions
+    // that occur when the anon client's session JWT hasn't propagated yet.
     async function loadCalStatus() {
       try {
-        const { data } = await supabase
-          .from('calendar_connections')
-          .select('status, account_email')
-          .eq('user_id', user!.id)
-          .maybeSingle()
+        const { data: sessionData } = await supabase.auth.getSession()
+        const token = sessionData?.session?.access_token
+        if (!token) { setCalStatus('disconnected'); return }
 
-        if (data?.status === 'connected') {
+        const resp = await fetch('/api/calendar-status', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!resp.ok) { setCalStatus('disconnected'); return }
+        const json = await resp.json() as { connected: boolean; status: string; accountEmail: string | null }
+        if (json.connected) {
           setCalStatus('connected')
-          setCalEmail(data.account_email ?? null)
+          setCalEmail(json.accountEmail)
+        } else if (json.status === 'error') {
+          setCalStatus('error')
         } else {
           setCalStatus('disconnected')
         }
