@@ -51,27 +51,55 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
 // ─── Central HELPAMART Google Calendar client ─────────────────────────────────
 // One dedicated HELPAMART Google account is the event organizer for ALL bookings.
 // Mentor = attendee, Mentee = attendee.
-// Authorise once via /api/admin-calendar-connect, store the refresh token in
-// HELPAMART_GOOGLE_REFRESH_TOKEN (Vercel env var — never in the browser).
-function getCentralCalendarClient(): InstanceType<typeof google.auth.OAuth2> | null {
+//
+// Token resolution order (both are server-side only — never in the browser):
+//   1. google_service_connections table (written by /api/admin-calendar-callback)
+//   2. HELPAMART_GOOGLE_REFRESH_TOKEN env var (manual fallback / override)
+async function getCentralCalendarClient(
+  db: ReturnType<typeof adminSupabase>,
+): Promise<InstanceType<typeof google.auth.OAuth2> | null> {
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
-  const refreshToken = process.env.HELPAMART_GOOGLE_REFRESH_TOKEN
 
   if (!clientId || !clientSecret) {
     console.log('[BOOK] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — skipping Calendar/Meet')
     return null
   }
+
+  let refreshToken: string | null = null
+
+  // 1. Try DB (authoritative — set by /api/admin-calendar-callback)
+  try {
+    const { data: conn } = await db
+      .from('google_service_connections')
+      .select('refresh_token, status')
+      .eq('key', 'helpamart_organizer')
+      .maybeSingle()
+
+    if (conn?.status === 'connected' && conn.refresh_token) {
+      refreshToken = conn.refresh_token
+      console.log('[BOOK] Central Calendar client loaded from DB')
+    }
+  } catch (e: any) {
+    console.warn('[BOOK] google_service_connections query failed:', e?.message)
+  }
+
+  // 2. Env var fallback (manual override / legacy)
   if (!refreshToken) {
-    console.log('[BOOK] HELPAMART_GOOGLE_REFRESH_TOKEN not set — Google Calendar disabled. Run /api/admin-calendar-connect once to authorise.')
+    const envToken = process.env.HELPAMART_GOOGLE_REFRESH_TOKEN
+    if (envToken) {
+      refreshToken = envToken
+      console.log('[BOOK] Central Calendar client loaded from env var')
+    }
+  }
+
+  if (!refreshToken) {
+    console.log('[BOOK] No central Google Calendar token found. Run /api/admin-calendar-connect to authorise.')
     return null
   }
 
   const oauth2 = new google.auth.OAuth2(clientId, clientSecret)
   oauth2.setCredentials({ refresh_token: refreshToken })
-
-  // Token refresh is handled automatically by the google-auth-library;
-  // no need to persist back to DB since the refresh token is in the env var.
   return oauth2
 }
 
@@ -79,7 +107,7 @@ function getCentralCalendarClient(): InstanceType<typeof google.auth.OAuth2> | n
 // Uses the central HELPAMART Google account as organizer.
 // Mentor + mentee are added as attendees.
 async function createCalendarEvent(opts: {
-  auth: InstanceType<typeof google.auth.OAuth2> | null
+  auth: InstanceType<typeof google.auth.OAuth2>
   mentorName: string
   menteeEmail: string | null
   mentorEmail: string | null
@@ -452,7 +480,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let calendarHtmlLink: string | null = null
     let calendarStatus = 'not_configured'
 
-    const calAuth = getCentralCalendarClient()
+    const calAuth = await getCentralCalendarClient(db)
 
     if (calAuth) {
       const calResult = await createCalendarEvent({
