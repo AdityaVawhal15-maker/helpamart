@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Calendar, Settings, User, Eye, BarChart3, Clock } from 'lucide-react'
+import { Calendar, Settings, User, Eye, BarChart3, Clock, CheckCircle2, AlertCircle, ExternalLink, Loader2 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
+import { supabase } from '@/lib/supabase'
 import { api } from '@/lib/api'
+import { useToast } from '@/components/ui/Toast'
 
 const NAV = [
   { to: '/mentor-dashboard', label: 'Overview', icon: <BarChart3 className="h-4 w-4" />, end: true },
@@ -16,7 +18,29 @@ const NAV = [
 export default function MentorDashboard() {
   const { user, mentor, loading } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const { toast } = useToast()
   const [stats, setStats] = useState({ upcoming: 0, completed: 0, views: 0 })
+  const [calStatus, setCalStatus] = useState<'loading' | 'connected' | 'disconnected' | 'error'>('loading')
+  const [calEmail, setCalEmail] = useState<string | null>(null)
+  const [connectingCal, setConnectingCal] = useState(false)
+
+  // Handle OAuth redirect params (?calendar=connected|error|denied)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const calParam = params.get('calendar')
+    if (calParam === 'connected') {
+      toast('Google Calendar connected successfully!', 'success')
+      // Clean URL without reload
+      window.history.replaceState({}, '', location.pathname)
+    } else if (calParam === 'error') {
+      toast('Google Calendar connection failed. Please try again.', 'error')
+      window.history.replaceState({}, '', location.pathname)
+    } else if (calParam === 'denied') {
+      toast('Google Calendar access was not granted. Please allow Calendar access to enable Google Meet.', 'error')
+      window.history.replaceState({}, '', location.pathname)
+    }
+  }, [location.search])
 
   useEffect(() => {
     if (loading) return
@@ -28,10 +52,40 @@ export default function MentorDashboard() {
       navigate('/become-a-mentor')
       return
     }
+
     api<{ upcoming: number; completed: number }>('/api/mentor/bookings/stats')
       .then((d) => setStats({ ...d, views: 0 }))
       .catch(() => {})
+
+    // Fetch calendar connection status from Supabase
+    async function loadCalStatus() {
+      try {
+        const { data } = await supabase
+          .from('calendar_connections')
+          .select('status, account_email')
+          .eq('user_id', user!.id)
+          .maybeSingle()
+
+        if (data?.status === 'connected') {
+          setCalStatus('connected')
+          setCalEmail(data.account_email ?? null)
+        } else {
+          setCalStatus('disconnected')
+        }
+      } catch {
+        setCalStatus('disconnected')
+      }
+    }
+    loadCalStatus()
   }, [user, mentor, loading, navigate])
+
+  function handleConnectCalendar() {
+    if (!user) return
+    setConnectingCal(true)
+    // Redirect to the serverless OAuth initiator with the user's ID in the query
+    // The route /api/calendar-connect redirects to Google's consent screen
+    window.location.href = `/api/calendar-connect?userId=${encodeURIComponent(user.id)}`
+  }
 
   if (loading) {
     return (
@@ -105,6 +159,75 @@ export default function MentorDashboard() {
                 <div className="bg-orange/10 border border-orange/20 rounded-xl px-4 py-2">
                   <p className="text-xs font-semibold text-orange">Profile not yet published</p>
                 </div>
+              )}
+            </div>
+
+            {/* ── Google Calendar Connection Card ───────────────────────── */}
+            <div className={`rounded-2xl border p-5 mb-6 ${
+              calStatus === 'connected'
+                ? 'bg-gold/6 border-gold/25'
+                : 'bg-ivory-light border-grey-soft'
+            }`}>
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="flex items-start gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                    calStatus === 'connected' ? 'bg-gold/15 text-gold' : 'bg-grey-soft text-grey'
+                  }`}>
+                    <Calendar className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-navy text-sm">Google Calendar</p>
+                    {calStatus === 'loading' && (
+                      <p className="text-xs text-grey mt-0.5 flex items-center gap-1">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Checking…
+                      </p>
+                    )}
+                    {calStatus === 'connected' && (
+                      <p className="text-xs text-grey mt-0.5 flex items-center gap-1.5">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-gold" />
+                        Connected
+                        {calEmail && <span className="text-grey/70">— {calEmail}</span>}
+                      </p>
+                    )}
+                    {calStatus === 'disconnected' && (
+                      <p className="text-xs text-grey mt-0.5 flex items-center gap-1.5">
+                        <AlertCircle className="h-3.5 w-3.5 text-maroon" />
+                        Not connected — students cannot receive a Google Meet link until you connect
+                      </p>
+                    )}
+                    {calStatus === 'error' && (
+                      <p className="text-xs text-maroon mt-0.5">
+                        Connection issue — please reconnect
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {calStatus !== 'loading' && (
+                  <button
+                    onClick={handleConnectCalendar}
+                    disabled={connectingCal}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all shrink-0 ${
+                      calStatus === 'connected'
+                        ? 'border border-grey-soft text-navy/60 hover:text-navy hover:border-navy/30'
+                        : 'bg-navy text-white hover:bg-navy-mid'
+                    }`}
+                  >
+                    {connectingCal
+                      ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Redirecting…</>
+                      : calStatus === 'connected'
+                      ? <><ExternalLink className="h-3.5 w-3.5" /> Reconnect</>
+                      : <><Calendar className="h-3.5 w-3.5" /> Connect Google Calendar</>
+                    }
+                  </button>
+                )}
+              </div>
+
+              {calStatus === 'disconnected' && (
+                <p className="text-xs text-grey/70 mt-3 pt-3 border-t border-grey-soft">
+                  Connecting your Google Calendar allows HELPAMART to automatically create a Google Meet conference for each session.
+                  Your calendar tokens are stored securely and never exposed to students.
+                </p>
               )}
             </div>
 
