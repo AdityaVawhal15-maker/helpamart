@@ -3,7 +3,7 @@ import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Calendar, User, Settings, LogOut, BookOpen } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
-import { api } from '@/lib/api'
+import { supabase } from '@/lib/supabase'
 import type { Booking } from '@/types'
 
 const NAV = [
@@ -24,9 +24,42 @@ export default function Dashboard() {
       navigate('/login?next=/dashboard')
       return
     }
-    api<{ bookings: Booking[] }>('/api/bookings?status=confirmed')
-      .then((d) => setUpcoming(d.bookings.slice(0, 3)))
-      .catch(() => {})
+    async function fetchUpcoming() {
+      if (!user) return
+      try {
+        const now = new Date().toISOString()
+        const { data } = await supabase
+          .from('bookings')
+          .select('*, mentors(name, slug)')
+          .eq('mentee_id', user.id)
+          .eq('status', 'confirmed')
+          .gte('start_at', now)
+          .order('start_at', { ascending: true })
+          .limit(3)
+        const mapped: Booking[] = (data || []).map((row: any) => ({
+          id: row.id,
+          mentorId: row.mentor_id,
+          menteeId: row.mentee_id,
+          serviceId: row.service_id,
+          startAt: row.start_at,
+          endAt: row.end_at,
+          timezone: row.timezone || 'UTC',
+          status: row.status,
+          paymentStatus: row.payment_status || 'not_required',
+          priceCents: row.price_cents ?? 0,
+          currency: row.currency || 'INR',
+          meetLink: row.meet_link || null,
+          calendarEventId: row.calendar_event_id || null,
+          calendarStatus: row.calendar_status || null,
+          mentorName: row.mentors?.name || null,
+          mentorSlug: row.mentors?.slug || null,
+          mentorPhoto: null,
+          serviceTitle: row.service_title || null,
+        }))
+        setUpcoming(mapped)
+      } catch {}
+    }
+    fetchUpcoming()
   }, [user, loading, navigate])
 
   if (loading) {

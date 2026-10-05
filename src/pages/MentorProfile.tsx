@@ -392,7 +392,7 @@ export default function MentorProfile() {
                         <Clock className="h-3.5 w-3.5" />{s.durationMinutes} min
                       </span>
                       <span className="font-semibold text-gold">
-                        {s.priceCents === 0 ? 'Free' : `$${(s.priceCents / 100).toFixed(0)}`}
+                        {s.priceCents === 0 ? 'Free' : `₹${Math.round(s.priceCents / 100)}`}
                       </span>
                     </div>
                   </button>
@@ -452,7 +452,7 @@ export default function MentorProfile() {
                 >
                   {mentor.services.map(s => (
                     <option key={s.id} value={s.id}>
-                      {s.title} — {s.durationMinutes} min {s.priceCents === 0 ? '(Free)' : `($${(s.priceCents / 100).toFixed(0)})`}
+                      {s.title} — {s.durationMinutes} min {s.priceCents === 0 ? '(Free)' : `(₹${Math.round(s.priceCents / 100)})`}
                     </option>
                   ))}
                 </select>
@@ -571,7 +571,7 @@ export default function MentorProfile() {
                 {selectedService && (
                   <p className="text-center text-xs text-grey mt-3">
                     {selectedService.durationMinutes} min session ·{' '}
-                    {selectedService.priceCents === 0 ? 'Free' : `$${(selectedService.priceCents / 100).toFixed(0)}`}
+                    {selectedService.priceCents === 0 ? 'Free' : `₹${Math.round(selectedService.priceCents / 100)}`}
                   </p>
                 )}
               </>

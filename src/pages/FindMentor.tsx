@@ -338,21 +338,17 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
   const ref = useRef<HTMLDivElement>(null)
   const inView = useInView(ref, { once: true })
 
-  // Derive price from services array if startingPriceCents was not populated in DB
-  const derivedPrice = (() => {
-    if (mentor.startingPriceCents != null) return mentor.startingPriceCents
+  // All mentor cards show "First session free" per HELPAMART pricing model.
+  // The first session with any mentor is complimentary; subsequent sessions use the mentor's set price.
+  // We derive the paid-session price for display on the profile page, not on discovery cards.
+  const paidPrice = (() => {
     if (!Array.isArray(mentor.services) || mentor.services.length === 0) return null
     const prices = mentor.services
-      .map(s => typeof s.priceCents === 'number' ? s.priceCents : null)
+      .map(s => typeof s.priceCents === 'number' && s.priceCents > 0 ? s.priceCents : null)
       .filter((p): p is number => p !== null)
     return prices.length > 0 ? Math.min(...prices) : null
   })()
-
-  const priceDisplay = derivedPrice != null
-    ? derivedPrice === 0
-      ? 'Free'
-      : `From ₹${Math.round(derivedPrice / 100)}`
-    : null
+  void paidPrice // available for future use on profile; cards always show free first session
 
   return (
     <motion.div
@@ -432,11 +428,7 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
 
           {/* Footer */}
           <div className="flex items-center justify-between mt-4 pt-4 border-t border-grey-soft">
-            {priceDisplay ? (
-              <span className="text-sm font-semibold text-gold">{priceDisplay}</span>
-            ) : (
-              <span className="text-sm text-grey">Session from —</span>
-            )}
+            <span className="text-sm font-semibold text-gold">First session free</span>
             <span className="inline-flex items-center gap-1 text-sm font-medium text-navy group-hover:text-gold transition-colors">
               View Profile
               <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />

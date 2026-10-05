@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Calendar, Clock, Video, X } from 'lucide-react'
-import { api } from '@/lib/api'
+import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 import type { Booking } from '@/types'
@@ -28,10 +28,47 @@ export default function Bookings() {
       navigate('/login?next=/dashboard/bookings')
       return
     }
-    api<{ bookings: Booking[] }>('/api/bookings')
-      .then((d) => setBookings(d.bookings))
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    async function fetchBookings() {
+      if (!user) return
+      try {
+        const { data, error } = await supabase
+          .from('bookings')
+          .select('*, mentors(name, slug, photo_url)')
+          .eq('mentee_id', user.id)
+          .order('start_at', { ascending: false })
+
+        if (error) {
+          console.error('[Bookings] fetch error:', error)
+          return
+        }
+        const mapped: Booking[] = (data || []).map((row: any) => ({
+          id: row.id,
+          mentorId: row.mentor_id,
+          menteeId: row.mentee_id,
+          serviceId: row.service_id,
+          startAt: row.start_at,
+          endAt: row.end_at,
+          timezone: row.timezone || 'UTC',
+          status: row.status || 'confirmed',
+          paymentStatus: row.payment_status || 'not_required',
+          priceCents: row.price_cents ?? 0,
+          currency: row.currency || 'INR',
+          meetLink: row.meet_link || null,
+          calendarEventId: row.calendar_event_id || null,
+          calendarStatus: row.calendar_status || null,
+          mentorName: row.mentors?.name || row.mentor_name || null,
+          mentorSlug: row.mentors?.slug || row.mentor_slug || null,
+          mentorPhoto: row.mentors?.photo_url || null,
+          serviceTitle: row.service_title || null,
+        }))
+        setBookings(mapped)
+      } catch (e) {
+        console.error('[Bookings] unexpected error:', e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchBookings()
   }, [user, authLoading, navigate])
 
   if (authLoading) {
@@ -46,7 +83,12 @@ export default function Bookings() {
 
   async function cancel(id: string) {
     try {
-      await api(`/api/bookings/${id}/cancel`, { method: 'POST' })
+      const { error } = await supabase
+        .from('bookings')
+        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .eq('mentee_id', user!.id)
+      if (error) throw new Error(error.message)
       setBookings(prev => prev.map(b => b.id === id ? { ...b, status: 'cancelled' } : b))
       toast('Booking cancelled.', 'success')
     } catch (e: unknown) {

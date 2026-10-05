@@ -764,21 +764,7 @@ function AbstractAvatarCluster() {
 }
 
 function HomeMentorCard({ mentor }: { mentor: Mentor }) {
-  // Derive price from services array if startingPriceCents was not populated in DB
-  const derivedPrice = (() => {
-    if (mentor.startingPriceCents != null) return mentor.startingPriceCents
-    if (!Array.isArray(mentor.services) || mentor.services.length === 0) return null
-    const prices = mentor.services
-      .map((s: any) => typeof s.priceCents === 'number' ? s.priceCents : null)
-      .filter((p: any): p is number => p !== null)
-    return prices.length > 0 ? Math.min(...prices) : null
-  })()
-
-  const priceDisplay = derivedPrice != null
-    ? derivedPrice === 0
-      ? 'Free'
-      : `From ₹${Math.round(derivedPrice / 100)}`
-    : null
+  // Cards always show "First session free" per HELPAMART pricing model.
 
   return (
     <Link to={`/mentor/${mentor.slug}`} className="card-mentor block group">
@@ -821,7 +807,7 @@ function HomeMentorCard({ mentor }: { mentor: Mentor }) {
 
         {/* Footer row */}
         <div className="flex items-center justify-between mt-4 pt-4 border-t border-grey-soft">
-          {priceDisplay && <span className="text-sm font-semibold text-gold">{priceDisplay}</span>}
+          <span className="text-sm font-semibold text-gold">First session free</span>
           <span className="ml-auto inline-flex items-center gap-1 text-sm font-medium text-navy group-hover:text-gold transition-colors">
             View Profile
             <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
