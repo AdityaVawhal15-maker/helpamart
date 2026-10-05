@@ -17,6 +17,7 @@ type BookingResult = {
   id: string
   meetLink: string | null
   calendarStatus: string | null
+  calendarHtmlLink: string | null
   status: string
   priceCents: number
   currency: string
@@ -161,7 +162,8 @@ export default function BookingFlow() {
 
   // ── Success screen ────────────────────────────────────────────────────────
   if (step === 'done' && booking) {
-    const calOk = booking.calendarStatus === 'created' || booking.calendarStatus === 'created_no_meet'
+    // Build Google Calendar web URL — opens the user's own Google Calendar
+    const calendarWebUrl = booking.calendarHtmlLink || 'https://calendar.google.com'
 
     return (
       <div className="min-h-screen bg-ivory flex items-center justify-center p-6">
@@ -213,16 +215,8 @@ export default function BookingFlow() {
             </div>
           </div>
 
-          {/* Calendar status note */}
-          {calOk && !booking.meetLink && (
-            <div className="bg-gold/8 border border-gold/20 rounded-xl p-3 mb-4 text-left">
-              <p className="text-xs text-navy/70">
-                Calendar event created. Google Meet link is being generated and will appear in your bookings shortly.
-              </p>
-            </div>
-          )}
-
           <div className="space-y-3">
+            {/* Join Google Meet — only shown when real URL exists */}
             {booking.meetLink ? (
               <a
                 href={booking.meetLink}
@@ -234,17 +228,33 @@ export default function BookingFlow() {
                 Join Google Meet
               </a>
             ) : (
-              <div className="flex items-center justify-center gap-2 w-full py-3.5 bg-ivory-dark text-navy/50 rounded-xl text-sm border border-grey-soft">
-                <VideoIcon className="h-4 w-4" />
-                <span>
-                  {booking.calendarStatus === 'not_configured'
-                    ? 'Google Calendar not configured — connect it in your mentor dashboard'
-                    : booking.calendarStatus === 'mentor_calendar_not_connected'
-                    ? 'Mentor has not connected Google Calendar yet'
-                    : 'Meet link will be available soon'}
-                </span>
-              </div>
+              /* Calendar connected but Meet failed — show actionable error, not a placeholder */
+              booking.calendarStatus === 'created_no_meet' || booking.calendarStatus?.includes('error') ? (
+                <div className="w-full py-3.5 bg-maroon/8 border border-maroon/20 text-maroon rounded-xl text-sm text-center">
+                  Google Meet could not be generated. Check your mentor dashboard and reconnect Google Calendar.
+                </div>
+              ) : booking.calendarStatus === 'mentor_calendar_not_connected' ? (
+                <div className="w-full py-3.5 bg-ivory-dark border border-grey-soft text-navy/60 rounded-xl text-sm text-center">
+                  Mentor has not connected Google Calendar — no Meet link available.
+                </div>
+              ) : booking.calendarStatus === 'not_configured' ? (
+                <div className="w-full py-3.5 bg-ivory-dark border border-grey-soft text-navy/60 rounded-xl text-sm text-center">
+                  Google Calendar is not configured on this server.
+                </div>
+              ) : null
             )}
+
+            {/* Open Google Calendar */}
+            <a
+              href={calendarWebUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 hover:bg-ivory-light transition-colors"
+            >
+              <Calendar className="h-4 w-4 text-gold" />
+              Open Google Calendar
+            </a>
+
             <button
               onClick={() => navigate('/dashboard/bookings')}
               className="w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 transition-colors"

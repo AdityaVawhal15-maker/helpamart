@@ -181,6 +181,14 @@ export default function Bookings() {
                           <Video className="h-3.5 w-3.5" /> Join Meet
                         </a>
                       )}
+                      <a
+                        href="https://calendar.google.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 px-4 py-2 border border-grey-soft rounded-xl text-xs font-medium text-navy/70 hover:text-navy hover:border-navy/30 transition-colors"
+                      >
+                        <Calendar className="h-3.5 w-3.5" /> Calendar
+                      </a>
                       {b.status === 'confirmed' && new Date(b.startAt) > now && (
                         <button
                           onClick={() => cancel(b.id)}

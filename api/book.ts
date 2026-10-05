@@ -113,7 +113,7 @@ async function createCalendarEvent(opts: {
     const res = await calendar.events.insert({
       calendarId: 'primary',
       conferenceDataVersion: 1,
-      sendUpdates: 'all', // sends invitations to attendees
+      sendUpdates: 'all', // sends Calendar invitations to attendees
       requestBody: {
         summary: `HELPAMART Mentorship — ${opts.mentorName}`,
         description: [
@@ -134,7 +134,7 @@ async function createCalendarEvent(opts: {
         },
         conferenceData: {
           createRequest: {
-            // Use booking ID as deterministic requestId to prevent duplicate Meet rooms on retry
+            // Deterministic requestId using booking ID — prevents duplicate Meet rooms on retry
             requestId: `helpamart-${opts.bookingId}`,
             conferenceSolutionKey: { type: 'hangoutsMeet' },
           },
@@ -143,26 +143,56 @@ async function createCalendarEvent(opts: {
     })
 
     const eventData = res.data
+    const htmlLink = eventData.htmlLink ?? null
 
-    // Meet link — may need a follow-up GET if conference is still pending
-    let meetLink: string | null =
-      eventData.hangoutLink ||
-      eventData.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri ||
-      null
-
-    // If conference is pending, poll once after 2 s
-    if (!meetLink && eventData.id) {
-      await new Promise(r => setTimeout(r, 2000))
-      try {
-        const polled = await calendar.events.get({ calendarId: 'primary', eventId: eventData.id })
-        meetLink =
-          polled.data.hangoutLink ||
-          polled.data.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri ||
-          null
-      } catch {}
+    // ── Extract Meet URL with proper pending-state polling ────────────────────
+    // Google documents that conferenceData.createRequest.status may initially be
+    // "pending" and transitions to "success" asynchronously.
+    // We poll up to 5 times (2 s apart → 10 s max) to wait for success.
+    function extractMeetLink(ev: typeof eventData): string | null {
+      return (
+        ev.hangoutLink ||
+        ev.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri ||
+        null
+      )
     }
 
-    // Persist refreshed tokens if needed
+    function conferenceStatus(ev: typeof eventData): string {
+      return ev.conferenceData?.createRequest?.status?.statusCode ?? 'unknown'
+    }
+
+    let meetLink: string | null = extractMeetLink(eventData)
+    let attempts = 0
+    const maxAttempts = 5
+    const pollDelayMs = 2000
+
+    while (!meetLink && attempts < maxAttempts && eventData.id) {
+      const status = conferenceStatus(eventData)
+      if (status === 'failure') {
+        // Google explicitly failed to create the conference — stop polling
+        console.warn(`[BOOK] Google Meet conference failed for event ${eventData.id}. status=failure`)
+        break
+      }
+      // status is "pending" or unknown — wait and re-fetch
+      await new Promise(r => setTimeout(r, pollDelayMs))
+      attempts++
+      try {
+        const polled = await calendar.events.get({ calendarId: 'primary', eventId: eventData.id })
+        meetLink = extractMeetLink(polled.data)
+        const polledStatus = conferenceStatus(polled.data)
+        console.log(`[BOOK] Meet poll attempt ${attempts}: status=${polledStatus}, meetLink=${meetLink ? 'present' : 'null'}`)
+        if (polledStatus === 'success' || meetLink) break
+        if (polledStatus === 'failure') break
+      } catch (pollErr) {
+        console.warn(`[BOOK] Meet poll attempt ${attempts} failed:`, pollErr)
+      }
+    }
+
+    if (!meetLink) {
+      console.warn(`[BOOK] Meet URL not obtained after ${attempts} poll(s) for event ${eventData.id}. conferenceStatus=${conferenceStatus(eventData)}`)
+    }
+
+    // Persist refreshed tokens if the OAuth client auto-refreshed
     try {
       const tokens = await opts.auth.getAccessToken()
       if (tokens?.token) {
@@ -173,11 +203,13 @@ async function createCalendarEvent(opts: {
       }
     } catch {}
 
-    return { ok: true, eventId: eventData.id, meetLink, htmlLink: eventData.htmlLink }
+    return { ok: true, eventId: eventData.id, meetLink, htmlLink }
   } catch (err: any) {
-    // Mark calendar connection as errored so UI can prompt reconnect
+    // Mark calendar connection as errored so dashboard can prompt reconnect
+    const errMsg = err?.message || 'calendar_error'
+    console.error(`[BOOK] Google Calendar event creation failed for mentor ${opts.mentorUserId}:`, errMsg)
     await opts.db.from('calendar_connections').update({ status: 'error' }).eq('user_id', opts.mentorUserId)
-    return { ok: false, reason: err?.message || 'calendar_error' }
+    return { ok: false, reason: errMsg }
   }
 }
 
@@ -448,6 +480,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 7. Google Calendar + Meet (non-blocking on calendar failure — booking is preserved)
     let meetLink: string | null = null
     let calendarEventId: string | null = null
+    let calendarHtmlLink: string | null = null
     let calendarStatus = 'not_configured'
 
     const calAuth = await getCalendarClient(mentorRow.user_id, db)
@@ -470,16 +503,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (calResult.ok) {
         meetLink = calResult.meetLink ?? null
         calendarEventId = calResult.eventId ?? null
+        calendarHtmlLink = calResult.htmlLink ?? null
         calendarStatus = meetLink ? 'created' : 'created_no_meet'
       } else {
         calendarStatus = calResult.reason || 'calendar_error'
         console.warn(`[BOOK] Calendar creation failed for booking ${bookingId}: ${calResult.reason}`)
       }
 
-      // Persist Calendar/Meet data back to booking
+      // Persist Calendar/Meet data back to booking (including the Calendar event HTML link)
       await db.from('bookings').update({
         meet_link: meetLink,
         calendar_event_id: calendarEventId,
+        calendar_html_link: calResult.htmlLink ?? null,
         calendar_status: calendarStatus,
         updated_at: new Date().toISOString(),
       }).eq('id', bookingId)
@@ -512,6 +547,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         id: bookingId,
         meetLink,
         calendarEventId,
+        calendarHtmlLink,
         calendarStatus,
         status: 'confirmed',
         priceCents: finalPriceCents,
