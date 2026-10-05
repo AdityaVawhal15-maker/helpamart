@@ -16,6 +16,7 @@ type State = {
 type BookingResult = {
   id: string
   meetLink: string | null
+  calendarStatus: string | null
   status: string
   priceCents: number
   currency: string
@@ -35,6 +36,10 @@ function formatPrice(priceCents: number, currency = 'INR') {
   if (currency === 'USD') return `$${amount}`
   return `${currency} ${amount}`
 }
+
+// Canonical API base — in production this is the same origin (Vercel serverless).
+// In local dev the Vite proxy forwards /api → Express on :8787.
+const API_BASE = ''
 
 export default function BookingFlow() {
   const { slug } = useParams<{ slug: string }>()
@@ -71,16 +76,17 @@ export default function BookingFlow() {
   // Determine first-session-free status from real booking history
   useEffect(() => {
     if (!user || !slug) { setCheckingPrice(false); return }
+    let cancelled = false
 
     async function checkSessionCount() {
       try {
-        // Get the mentor's id from slug
         const { data: mentorRow } = await supabase
           .from('mentors')
           .select('id')
-          .eq('slug', slug)
+          .eq('slug', slug!)
           .maybeSingle()
 
+        if (cancelled) return
         if (!mentorRow) { setIsFirstSession(true); setCheckingPrice(false); return }
 
         const { count } = await supabase
@@ -90,131 +96,59 @@ export default function BookingFlow() {
           .eq('mentor_id', mentorRow.id)
           .in('status', ['confirmed', 'completed'])
 
-        setIsFirstSession((count ?? 0) === 0)
+        if (!cancelled) setIsFirstSession((count ?? 0) === 0)
       } catch {
-        setIsFirstSession(true) // safe default — server will recheck
+        if (!cancelled) setIsFirstSession(true)
       } finally {
-        setCheckingPrice(false)
+        if (!cancelled) setCheckingPrice(false)
       }
     }
 
     checkSessionCount()
+    return () => { cancelled = true }
   }, [user, slug])
 
   const displayPriceCents = isFirstSession === true ? 0 : (service.priceCents ?? 9900)
   const displayCurrency = service.currency || 'INR'
 
   async function confirmBooking() {
-    if (submitting) return // prevent double-click
-    if (!user) {
-      navigate(`/login?next=/mentor/${slug}`)
-      return
-    }
+    if (submitting) return
+    if (!user) { navigate(`/login?next=/mentor/${slug}`); return }
 
     setSubmitting(true)
     setStep('processing')
 
     try {
-      const { data: mentorRow, error: mentorErr } = await supabase
-        .from('mentors')
-        .select('id, user_id, name, services, buffer_minutes, timezone')
-        .eq('slug', slug!)
-        .eq('status', 'published')
-        .maybeSingle()
+      // Get Supabase JWT to authenticate the server-side API route
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData?.session?.access_token
+      if (!token) throw new Error('Session expired. Please sign in again.')
 
-      if (mentorErr || !mentorRow) {
-        throw new Error('This mentor is not currently available. Please go back and try again.')
-      }
-
-      // Server-side first-session determination (authoritative)
-      const { count: prevCount } = await supabase
-        .from('bookings')
-        .select('id', { count: 'exact', head: true })
-        .eq('mentee_id', user.id)
-        .eq('mentor_id', mentorRow.id)
-        .in('status', ['confirmed', 'completed'])
-
-      const serverIsFirst = (prevCount ?? 0) === 0
-      const finalPriceCents = serverIsFirst ? 0 : (service.priceCents ?? 9900)
-
-      // Double-booking check
-      const { data: clash } = await supabase
-        .from('bookings')
-        .select('id')
-        .eq('mentor_id', mentorRow.id)
-        .in('status', ['confirmed', 'pending'])
-        .lt('start_at', end.toISOString())
-        .gt('end_at', start.toISOString())
-        .limit(1)
-
-      if (clash && clash.length > 0) {
-        throw new Error('This time slot is no longer available. Please go back and choose another time.')
-      }
-
-      const bookingId = crypto.randomUUID()
-      const now = new Date().toISOString()
-
-      // Resolve service id
-      const services: any[] = Array.isArray(mentorRow.services) ? mentorRow.services : []
-      const svc = service.id
-        ? services.find((s: any) => s.id === service.id) ?? services[0]
-        : services[0]
-
-      const { error: insertErr } = await supabase
-        .from('bookings')
-        .insert({
-          id: bookingId,
-          mentor_id: mentorRow.id,
-          mentee_id: user.id,
-          service_id: svc?.id || service.id || service.title || 'default',
-          service_title: service.title,
-          start_at: start.toISOString(),
-          end_at: end.toISOString(),
+      // Call the Vercel API route — handles Calendar, Meet, email, idempotency
+      const res = await fetch(`${API_BASE}/api/book`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          mentorSlug: slug,
+          serviceId: service.id,
+          startAt,
           timezone,
-          status: 'confirmed',
-          payment_status: finalPriceCents === 0 ? 'not_required' : 'pending',
-          price_cents: finalPriceCents,
-          currency: displayCurrency,
-          meet_link: null,
-          calendar_event_id: null,
-          calendar_status: 'pending',
-          created_at: now,
-          updated_at: now,
-        })
+        }),
+      })
 
-      if (insertErr) {
-        if (insertErr.code === '23505') {
-          // Duplicate submission — idempotent: treat as success
-          setBooking({
-            id: bookingId,
-            meetLink: null,
-            status: 'confirmed',
-            priceCents: finalPriceCents,
-            currency: displayCurrency,
-            isFirstSession: serverIsFirst,
-            startAt: start.toISOString(),
-            endAt: end.toISOString(),
-            mentorName: mentorRow.name || '',
-          })
-          setStep('done')
-          return
-        }
-        throw new Error(`Could not create your booking: ${insertErr.message}`)
+      const json = await res.json().catch(() => ({}))
+
+      if (!res.ok) {
+        throw new Error((json as { error?: string }).error || 'Booking failed. Please try again.')
       }
 
-      // Booking created — Google Meet/Calendar is handled server-side when Express runs.
-      // Surface the booking result with whatever calendar info is available.
-      setBooking({
-        id: bookingId,
-        meetLink: null,
-        status: 'confirmed',
-        priceCents: finalPriceCents,
-        currency: displayCurrency,
-        isFirstSession: serverIsFirst,
-        startAt: start.toISOString(),
-        endAt: end.toISOString(),
-        mentorName: mentorRow.name || '',
-      })
+      const result = json as { booking: BookingResult }
+      if (!result?.booking?.id) throw new Error('Unexpected response from server.')
+
+      setBooking(result.booking)
       setStep('done')
     } catch (err: unknown) {
       const msg = (err as Error).message || 'Booking failed. Please try again.'
@@ -227,6 +161,8 @@ export default function BookingFlow() {
 
   // ── Success screen ────────────────────────────────────────────────────────
   if (step === 'done' && booking) {
+    const calOk = booking.calendarStatus === 'created' || booking.calendarStatus === 'created_no_meet'
+
     return (
       <div className="min-h-screen bg-ivory flex items-center justify-center p-6">
         <motion.div
@@ -238,7 +174,7 @@ export default function BookingFlow() {
           <div className="w-16 h-16 rounded-full bg-gold/15 flex items-center justify-center mx-auto mb-6">
             <CheckCircle className="h-8 w-8 text-gold" />
           </div>
-          <h1 className="text-display-md font-display text-navy mb-2">You're booked.</h1>
+          <h1 className="text-display-md font-display text-navy mb-2">You&apos;re booked.</h1>
           <p className="text-grey mb-2 leading-relaxed">
             Your session with <strong className="text-navy">{booking.mentorName}</strong> has been confirmed.
           </p>
@@ -277,6 +213,15 @@ export default function BookingFlow() {
             </div>
           </div>
 
+          {/* Calendar status note */}
+          {calOk && !booking.meetLink && (
+            <div className="bg-gold/8 border border-gold/20 rounded-xl p-3 mb-4 text-left">
+              <p className="text-xs text-navy/70">
+                Calendar event created. Google Meet link is being generated and will appear in your bookings shortly.
+              </p>
+            </div>
+          )}
+
           <div className="space-y-3">
             {booking.meetLink ? (
               <a
@@ -291,7 +236,13 @@ export default function BookingFlow() {
             ) : (
               <div className="flex items-center justify-center gap-2 w-full py-3.5 bg-ivory-dark text-navy/50 rounded-xl text-sm border border-grey-soft">
                 <VideoIcon className="h-4 w-4" />
-                <span>Meet link will be available soon</span>
+                <span>
+                  {booking.calendarStatus === 'not_configured'
+                    ? 'Google Calendar not configured — connect it in your mentor dashboard'
+                    : booking.calendarStatus === 'mentor_calendar_not_connected'
+                    ? 'Mentor has not connected Google Calendar yet'
+                    : 'Meet link will be available soon'}
+                </span>
               </div>
             )}
             <button
@@ -327,7 +278,6 @@ export default function BookingFlow() {
           <h1 className="text-display-md font-display text-navy mb-1">Confirm your session</h1>
           <p className="text-grey text-sm mb-8">Review the details below before booking.</p>
 
-          {/* Summary */}
           <div className="bg-ivory-light rounded-2xl p-5 space-y-4 mb-8">
             <div>
               <p className="text-xs text-grey font-medium uppercase tracking-wider mb-1">Session</p>
@@ -336,7 +286,7 @@ export default function BookingFlow() {
             </div>
             <div className="h-px bg-grey-soft" />
             <div>
-              <p className="text-xs text-grey font-medium uppercase tracking-wider mb-1">Date & Time</p>
+              <p className="text-xs text-grey font-medium uppercase tracking-wider mb-1">Date &amp; Time</p>
               <p className="font-semibold text-navy">{formatDate(start)}</p>
               <p className="text-sm text-grey mt-0.5">{formatTime(start)} – {formatTime(end)} · {timezone}</p>
             </div>
@@ -361,12 +311,11 @@ export default function BookingFlow() {
             </div>
           </div>
 
-          {/* Notice */}
           <div className="bg-gold/8 border border-gold/20 rounded-xl p-4 mb-6">
             <p className="text-xs text-navy/70 leading-relaxed">
               {isFirstSession
-                ? 'Your first session with this mentor is complimentary. A Google Meet link will be available after booking.'
-                : 'By confirming, a Google Meet session will be generated (if configured). You will receive confirmation details via your account.'}
+                ? 'Your first session is complimentary. A Google Meet link will be generated and emailed to you.'
+                : 'A Google Calendar event and Google Meet link will be created. You will receive confirmation by email.'}
             </p>
           </div>
 
