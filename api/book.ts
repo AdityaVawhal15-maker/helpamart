@@ -62,26 +62,39 @@ async function getCentralCalendarClient(
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
 
   if (!clientId || !clientSecret) {
-    console.log('[BOOK] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — skipping Calendar/Meet')
+    console.error('[BOOK] CRITICAL: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set in Vercel env vars')
     return null
   }
 
   let refreshToken: string | null = null
+  let source: string = 'none'
 
   // 1. Try DB (authoritative — set by /api/admin-calendar-callback)
   try {
-    const { data: conn } = await db
+    const { data: conn, error: dbErr } = await db
       .from('google_service_connections')
-      .select('refresh_token, status')
+      .select('refresh_token, status, account_email')
       .eq('key', 'helpamart_organizer')
       .maybeSingle()
 
-    if (conn?.status === 'connected' && conn.refresh_token) {
-      refreshToken = conn.refresh_token
-      console.log('[BOOK] Central Calendar client loaded from DB')
+    if (dbErr) {
+      console.warn(`[BOOK] google_service_connections query error: ${dbErr.message}`)
+    }
+    
+    if (conn) {
+      console.log(`[BOOK] Found central connection in DB: status=${conn.status}, account_email=${conn.account_email || 'null'}`)
+      if (conn.status === 'connected' && conn.refresh_token) {
+        refreshToken = conn.refresh_token
+        source = 'db'
+        console.log(`[BOOK] central_auth_source=db`)
+      } else {
+        console.warn(`[BOOK] DB connection exists but invalid: status=${conn.status}, token_present=${!!conn.refresh_token}`)
+      }
+    } else {
+      console.warn(`[BOOK] No central connection found in google_service_connections table`)
     }
   } catch (e: any) {
-    console.warn('[BOOK] google_service_connections query failed:', e?.message)
+    console.error(`[BOOK] google_service_connections query failed: ${e?.message}`)
   }
 
   // 2. Env var fallback (manual override / legacy)
@@ -89,18 +102,25 @@ async function getCentralCalendarClient(
     const envToken = process.env.HELPAMART_GOOGLE_REFRESH_TOKEN
     if (envToken) {
       refreshToken = envToken
-      console.log('[BOOK] Central Calendar client loaded from env var')
+      source = 'env_var'
+      console.log(`[BOOK] central_auth_source=env_var`)
     }
   }
 
   if (!refreshToken) {
-    console.log('[BOOK] No central Google Calendar token found. Run /api/admin-calendar-connect to authorise.')
+    console.error(`[BOOK] CRITICAL: No central Google refresh token found (DB or env). Run /api/admin-calendar-connect to authorize.`)
     return null
   }
 
-  const oauth2 = new google.auth.OAuth2(clientId, clientSecret)
-  oauth2.setCredentials({ refresh_token: refreshToken })
-  return oauth2
+  try {
+    const oauth2 = new google.auth.OAuth2(clientId, clientSecret)
+    oauth2.setCredentials({ refresh_token: refreshToken })
+    console.log(`[BOOK] OAuth2 client created successfully from source=${source}`)
+    return oauth2
+  } catch (e: any) {
+    console.error(`[BOOK] Failed to create OAuth2 client: ${e?.message}`)
+    return null
+  }
 }
 
 // ─── Create Google Calendar event + Meet conference ───────────────────────────
@@ -177,29 +197,39 @@ async function createCalendarEvent(opts: {
     let attempts = 0
     const maxAttempts = 8         // up to 20 s total (8 × 2.5 s) — Google Meet often takes 5–15 s
     const pollDelayMs = 2500
+    let latestEventData = eventData
 
-    while (!meetLink && attempts < maxAttempts && eventData.id) {
-      const status = conferenceStatus(eventData)
+    while (!meetLink && attempts < maxAttempts && latestEventData.id) {
+      const status = conferenceStatus(latestEventData)
       if (status === 'failure') {
-        console.warn(`[BOOK] Google Meet conference failed for event ${eventData.id}. status=failure`)
+        console.log(`[BOOK] Conference status=failure at start of loop, stopping polling`)
         break
       }
       await new Promise(r => setTimeout(r, pollDelayMs))
       attempts++
       try {
-        const polled = await calendar.events.get({ calendarId: 'primary', eventId: eventData.id })
-        meetLink = extractMeetLink(polled.data)
-        const polledStatus = conferenceStatus(polled.data)
+        const polled = await calendar.events.get({ calendarId: 'primary', eventId: latestEventData.id })
+        latestEventData = polled.data
+        meetLink = extractMeetLink(latestEventData)
+        const polledStatus = conferenceStatus(latestEventData)
         console.log(`[BOOK] Meet poll attempt ${attempts}: status=${polledStatus}, meetLink=${meetLink ? 'present' : 'null'}`)
-        if (polledStatus === 'success' || meetLink) break
-        if (polledStatus === 'failure') break
-      } catch (pollErr) {
-        console.warn(`[BOOK] Meet poll attempt ${attempts} failed:`, pollErr)
+        if (polledStatus === 'success' || meetLink) {
+          console.log(`[BOOK] Meet URL found or success status reached`)
+          break
+        }
+        if (polledStatus === 'failure') {
+          console.log(`[BOOK] Conference status=failure during polling, stopping`)
+          break
+        }
+      } catch (pollErr: any) {
+        console.warn(`[BOOK] Meet poll attempt ${attempts} failed: ${pollErr?.message}`)
       }
     }
 
     if (!meetLink) {
-      console.warn(`[BOOK] Meet URL not obtained after ${attempts} poll(s) for event ${eventData.id}. conferenceStatus=${conferenceStatus(eventData)}`)
+      console.warn(`[BOOK] Meet URL not obtained after ${attempts} poll(s) for event ${latestEventData.id}. Final status=${conferenceStatus(latestEventData)}`)
+    } else {
+      console.log(`[BOOK] Meet URL successfully obtained: ${meetLink}`)
     }
 
     return { ok: true, eventId: eventData.id, meetLink, htmlLink }
@@ -480,9 +510,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let calendarHtmlLink: string | null = null
     let calendarStatus = 'not_configured'
 
+    console.log(`[BOOK] Starting Calendar/Meet creation for booking ${bookingId}`)
+    
     const calAuth = await getCentralCalendarClient(db)
+    
+    if (!calAuth) {
+      console.error(`[BOOK] CRITICAL: central_calendar_auth=null. No central Google connection found. Check google_service_connections table and env vars.`)
+    } else {
+      console.log(`[BOOK] central_calendar_auth=OK`)
+    }
 
     if (calAuth) {
+      console.log(`[BOOK] Creating Calendar event with Google Calendar API...`)
       const calResult = await createCalendarEvent({
         auth: calAuth,
         mentorName: mentorRow.name,
@@ -500,9 +539,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         calendarEventId = calResult.eventId ?? null
         calendarHtmlLink = calResult.htmlLink ?? null
         calendarStatus = meetLink ? 'created' : 'created_no_meet'
+        console.log(`[BOOK] calendar_event_created=true, eventId=${calendarEventId}, meetLink_present=${!!meetLink}`)
       } else {
         calendarStatus = calResult.reason || 'calendar_error'
-        console.warn(`[BOOK] Calendar/Meet creation failed for booking ${bookingId}: ${calResult.reason}`)
+        console.error(`[BOOK] calendar_event_created=false, reason=${calResult.reason}`)
       }
 
       await db.from('bookings').update({
@@ -513,6 +553,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         updated_at: new Date().toISOString(),
       }).eq('id', bookingId)
     } else {
+      console.error(`[BOOK] calendar_status=not_configured — central auth is unavailable`)
       await db.from('bookings').update({
         calendar_status: 'not_configured',
         updated_at: new Date().toISOString(),
