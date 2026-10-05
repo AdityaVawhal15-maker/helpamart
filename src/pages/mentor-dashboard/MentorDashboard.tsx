@@ -79,12 +79,24 @@ export default function MentorDashboard() {
     loadCalStatus()
   }, [user, mentor, loading, navigate])
 
-  function handleConnectCalendar() {
+  async function handleConnectCalendar() {
     if (!user) return
     setConnectingCal(true)
-    // Redirect to the serverless OAuth initiator with the user's ID in the query
-    // The route /api/calendar-connect redirects to Google's consent screen
-    window.location.href = `/api/calendar-connect?userId=${encodeURIComponent(user.id)}`
+    try {
+      // Pass the current Supabase session token so the server can verify identity
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData?.session?.access_token
+      if (!token) {
+        toast('Session expired. Please sign in again.', 'error')
+        setConnectingCal(false)
+        return
+      }
+      // Redirect to the serverless OAuth initiator — token proves identity server-side
+      window.location.href = `/api/calendar-connect?token=${encodeURIComponent(token)}`
+    } catch {
+      toast('Could not start Calendar connection. Please try again.', 'error')
+      setConnectingCal(false)
+    }
   }
 
   if (loading) {

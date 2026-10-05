@@ -1680,6 +1680,102 @@ function StepPreview({
   )
 }
 
+// ─── GOOGLE CALENDAR CONNECT CARD (used inside Step 07 Publish) ──────────────
+// Self-contained component so it can use hooks without breaking the parent function.
+function CalendarConnectCard() {
+  const { user } = useAuth()
+  const { toast } = useToast()
+  const [calStatus, setCalStatus] = useState<'loading' | 'connected' | 'disconnected'>('loading')
+  const [calEmail, setCalEmail] = useState<string | null>(null)
+  const [connecting, setConnecting] = useState(false)
+
+  useEffect(() => {
+    if (!user) { setCalStatus('disconnected'); return }
+    let cancelled = false
+    async function check() {
+      try {
+        const { supabase } = await import('@/lib/supabase')
+        const { data } = await supabase
+          .from('calendar_connections')
+          .select('status, account_email')
+          .eq('user_id', user!.id)
+          .maybeSingle()
+        if (cancelled) return
+        if (data?.status === 'connected') {
+          setCalStatus('connected')
+          setCalEmail(data.account_email ?? null)
+        } else {
+          setCalStatus('disconnected')
+        }
+      } catch {
+        if (!cancelled) setCalStatus('disconnected')
+      }
+    }
+    check()
+    return () => { cancelled = true }
+  }, [user])
+
+  async function handleConnect() {
+    if (!user) return
+    setConnecting(true)
+    try {
+      const { supabase } = await import('@/lib/supabase')
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData?.session?.access_token
+      if (!token) { toast('Session expired. Please sign in again.', 'error'); setConnecting(false); return }
+      window.location.href = `/api/calendar-connect?token=${encodeURIComponent(token)}`
+    } catch {
+      toast('Could not start Calendar connection. Please try again.', 'error')
+      setConnecting(false)
+    }
+  }
+
+  return (
+    <div className={`rounded-2xl border p-5 ${calStatus === 'connected' ? 'bg-gold/6 border-gold/25' : 'bg-ivory-light border-grey-soft'}`}>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-start gap-3">
+          <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${calStatus === 'connected' ? 'bg-gold/15 text-gold' : 'bg-grey-soft text-grey'}`}>
+            <CheckCircle className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-navy">Google Calendar</p>
+            {calStatus === 'loading' && <p className="text-xs text-grey mt-0.5 flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Checking…</p>}
+            {calStatus === 'connected' && (
+              <p className="text-xs text-grey mt-0.5 flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5 text-gold" />
+                Connected{calEmail && <span className="text-grey/70">— {calEmail}</span>}
+              </p>
+            )}
+            {calStatus === 'disconnected' && (
+              <p className="text-xs text-grey mt-0.5">Connect to enable Google Meet for every session</p>
+            )}
+          </div>
+        </div>
+        {calStatus !== 'loading' && (
+          <button
+            type="button"
+            onClick={handleConnect}
+            disabled={connecting}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all shrink-0 ${
+              calStatus === 'connected'
+                ? 'border border-grey-soft text-navy/60 hover:text-navy'
+                : 'bg-navy text-white hover:bg-navy-mid'
+            }`}
+          >
+            {connecting ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Redirecting…</> : calStatus === 'connected' ? 'Reconnect' : 'Connect Google Calendar'}
+          </button>
+        )}
+      </div>
+      {calStatus === 'disconnected' && (
+        <p className="text-xs text-grey/60 mt-3 pt-3 border-t border-grey-soft">
+          Optional but recommended. Once connected, each booking automatically creates a real Google Meet link.
+          You can also connect this after publishing from your Mentor Dashboard.
+        </p>
+      )}
+    </div>
+  )
+}
+
 // ─── STEP 07: PUBLISH ONLY ────────────────────────────────────────────────────
 function StepPublish({
   fullName, photoUrl, roleTitle, intro, categories, skills, services,
@@ -1769,6 +1865,9 @@ function StepPublish({
           </div>
         )}
       </div>
+
+      {/* Google Calendar Connection — inside the Publish step, no extra onboarding step */}
+      <CalendarConnectCard />
 
       {/* Action Buttons */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-grey-soft">
