@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle, Calendar, Clock, Globe, ArrowLeft, Loader2, VideoIcon, IndianRupee } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
@@ -162,7 +162,6 @@ export default function BookingFlow() {
 
   // ── Success screen ────────────────────────────────────────────────────────
   if (step === 'done' && booking) {
-    // Build Google Calendar web URL — opens the user's own Google Calendar
     const calendarWebUrl = booking.calendarHtmlLink || 'https://calendar.google.com'
 
     return (
@@ -171,89 +170,126 @@ export default function BookingFlow() {
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
-          className="max-w-md w-full bg-white rounded-3xl shadow-[0_20px_60px_rgba(7,26,53,0.12)] p-8 text-center"
+          className="max-w-md w-full bg-white rounded-3xl shadow-[0_20px_60px_rgba(7,26,53,0.12)] p-8 text-center relative overflow-hidden"
         >
-          <div className="w-16 h-16 rounded-full bg-gold/15 flex items-center justify-center mx-auto mb-6">
-            <CheckCircle className="h-8 w-8 text-gold" />
-          </div>
-          <h1 className="text-display-md font-display text-navy mb-2">You&apos;re booked.</h1>
-          <p className="text-grey mb-2 leading-relaxed">
-            Your session with <strong className="text-navy">{booking.mentorName}</strong> has been confirmed.
-          </p>
-          {booking.isFirstSession && (
-            <p className="text-sm text-gold font-semibold mb-6">First session — complimentary ✦</p>
-          )}
+          {/* Premium confetti burst — soft gold particles */}
+          <ConfettiBurst />
 
-          <div className="bg-ivory-light rounded-2xl p-5 text-left space-y-3 mb-8">
-            <div className="flex items-start gap-3">
-              <Calendar className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs text-grey">Date</p>
-                <p className="text-sm font-medium text-navy">{formatDate(start)}</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <Clock className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs text-grey">Time</p>
-                <p className="text-sm font-medium text-navy">{formatTime(start)} – {formatTime(end)}</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <Globe className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs text-grey">Timezone</p>
-                <p className="text-sm font-medium text-navy">{timezone}</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <IndianRupee className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs text-grey">Amount</p>
-                <p className="text-sm font-medium text-navy">{formatPrice(booking.priceCents, booking.currency)}</p>
-              </div>
-            </div>
-          </div>
+          <div className="relative z-10">
+            <motion.div
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ delay: 0.2, duration: 0.5, ease: [0.34, 1.56, 0.64, 1] }}
+              className="w-16 h-16 rounded-full bg-gold/15 flex items-center justify-center mx-auto mb-6"
+            >
+              <CheckCircle className="h-8 w-8 text-gold" />
+            </motion.div>
 
-          <div className="space-y-3">
-            {/* Join Google Meet — only shown when real URL exists */}
-            {booking.meetLink ? (
+            <motion.h1
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.35, duration: 0.5 }}
+              className="text-display-md font-display text-navy mb-2"
+            >
+              You&apos;re booked.
+            </motion.h1>
+            <motion.p
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.45, duration: 0.5 }}
+              className="text-grey mb-2 leading-relaxed"
+            >
+              Your session with <strong className="text-navy">{booking.mentorName}</strong> has been confirmed.
+            </motion.p>
+            {booking.isFirstSession && (
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.55, duration: 0.4 }}
+                className="text-sm text-gold font-semibold mb-6"
+              >
+                First session — complimentary ✦
+              </motion.p>
+            )}
+
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.5, duration: 0.5 }}
+              className="bg-ivory-light rounded-2xl p-5 text-left space-y-3 mb-8"
+            >
+              <div className="flex items-start gap-3">
+                <Calendar className="h-4 w-4 text-gold mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs text-grey">Date</p>
+                  <p className="text-sm font-medium text-navy">{formatDate(start)}</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <Clock className="h-4 w-4 text-gold mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs text-grey">Time</p>
+                  <p className="text-sm font-medium text-navy">{formatTime(start)} – {formatTime(end)}</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <Globe className="h-4 w-4 text-gold mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs text-grey">Timezone</p>
+                  <p className="text-sm font-medium text-navy">{timezone}</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <IndianRupee className="h-4 w-4 text-gold mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs text-grey">Amount</p>
+                  <p className="text-sm font-medium text-navy">{formatPrice(booking.priceCents, booking.currency)}</p>
+                </div>
+              </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.6, duration: 0.5 }}
+              className="space-y-3"
+            >
+              {/* Join Google Meet — always shown; graceful if URL not yet available */}
+              {booking.meetLink ? (
+                <a
+                  href={booking.meetLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 w-full py-3.5 bg-navy text-white rounded-xl font-semibold hover:bg-navy-mid transition-all hover:shadow-[0_6px_20px_rgba(7,26,53,0.2)]"
+                >
+                  <VideoIcon className="h-4 w-4" />
+                  Join Google Meet
+                </a>
+              ) : (
+                <div className="flex items-center justify-center gap-2 w-full py-3.5 bg-ivory-dark text-navy/50 rounded-xl text-sm border border-grey-soft">
+                  <VideoIcon className="h-4 w-4" />
+                  Google Meet link will be emailed to you
+                </div>
+              )}
+
+              {/* Open Google Calendar */}
               <a
-                href={booking.meetLink}
+                href={calendarWebUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 w-full py-3.5 bg-navy text-white rounded-xl font-semibold hover:bg-navy-mid transition-all"
+                className="flex items-center justify-center gap-2 w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 hover:bg-ivory-light transition-colors"
               >
-                <VideoIcon className="h-4 w-4" />
-                Join Google Meet
+                <Calendar className="h-4 w-4 text-gold" />
+                Open Google Calendar
               </a>
-            ) : booking.calendarStatus?.includes('error') || booking.calendarStatus === 'created_no_meet' ? (
-              <div className="w-full py-3.5 bg-maroon/8 border border-maroon/20 text-maroon rounded-xl text-sm text-center">
-                Google Meet could not be generated for this session. Please contact support.
-              </div>
-            ) : booking.calendarStatus === 'not_configured' ? (
-              <div className="w-full py-3.5 bg-ivory-dark border border-grey-soft text-navy/60 rounded-xl text-sm text-center">
-                Google Calendar is not configured on this server. Contact the HELPAMART admin.
-              </div>
-            ) : null}
 
-            {/* Open Google Calendar */}
-            <a
-              href={calendarWebUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 hover:bg-ivory-light transition-colors"
-            >
-              <Calendar className="h-4 w-4 text-gold" />
-              Open Google Calendar
-            </a>
-
-            <button
-              onClick={() => navigate('/dashboard/bookings')}
-              className="w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 transition-colors"
-            >
-              View My Bookings
-            </button>
+              <button
+                onClick={() => navigate('/dashboard/bookings')}
+                className="w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 transition-colors"
+              >
+                View My Bookings
+              </button>
+            </motion.div>
           </div>
         </motion.div>
       </div>
@@ -338,6 +374,51 @@ export default function BookingFlow() {
           </button>
         </motion.div>
       </div>
+    </div>
+  )
+}
+
+// ─── Premium celebration: soft gold confetti burst ────────────────────────────
+// Uses Framer Motion to animate a small number of minimal gold/cream particles
+// that burst outward for ~1 second on the booking success screen.
+// Deliberately subtle — no childish colors, no full-screen takeover.
+function ConfettiBurst() {
+  const particles = Array.from({ length: 18 }, (_, i) => ({
+    id: i,
+    // Alternate between HELPAMART gold, ivory, and navy
+    color: i % 3 === 0 ? '#B77A22' : i % 3 === 1 ? '#F5F0E8' : '#071A35',
+    angle: (360 / 18) * i,
+    distance: 60 + (i % 4) * 20,
+    size: i % 3 === 0 ? 6 : 4,
+    delay: (i % 5) * 0.04,
+    shape: i % 2 === 0 ? 'circle' : 'rect',
+  }))
+
+  return (
+    <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden">
+      <AnimatePresence>
+        {particles.map(p => {
+          const rad = (p.angle * Math.PI) / 180
+          const x = Math.cos(rad) * p.distance
+          const y = Math.sin(rad) * p.distance
+          return (
+            <motion.div
+              key={p.id}
+              initial={{ opacity: 0, x: 0, y: 0, scale: 0 }}
+              animate={{ opacity: [0, 1, 1, 0], x, y, scale: [0, 1, 1, 0.5] }}
+              transition={{ duration: 1.1, delay: p.delay, ease: 'easeOut' }}
+              style={{
+                position: 'absolute',
+                width: p.size,
+                height: p.shape === 'rect' ? p.size * 2 : p.size,
+                borderRadius: p.shape === 'circle' ? '50%' : 2,
+                backgroundColor: p.color,
+                opacity: 0.7,
+              }}
+            />
+          )
+        })}
+      </AnimatePresence>
     </div>
   )
 }

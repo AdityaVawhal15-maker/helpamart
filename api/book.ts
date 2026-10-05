@@ -175,8 +175,8 @@ async function createCalendarEvent(opts: {
 
     let meetLink: string | null = extractMeetLink(eventData)
     let attempts = 0
-    const maxAttempts = 5
-    const pollDelayMs = 2000
+    const maxAttempts = 8         // up to 20 s total (8 × 2.5 s) — Google Meet often takes 5–15 s
+    const pollDelayMs = 2500
 
     while (!meetLink && attempts < maxAttempts && eventData.id) {
       const status = conferenceStatus(eventData)
