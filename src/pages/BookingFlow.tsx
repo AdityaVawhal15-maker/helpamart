@@ -227,22 +227,15 @@ export default function BookingFlow() {
                 <VideoIcon className="h-4 w-4" />
                 Join Google Meet
               </a>
-            ) : (
-              /* Calendar connected but Meet failed — show actionable error, not a placeholder */
-              booking.calendarStatus === 'created_no_meet' || booking.calendarStatus?.includes('error') ? (
-                <div className="w-full py-3.5 bg-maroon/8 border border-maroon/20 text-maroon rounded-xl text-sm text-center">
-                  Google Meet could not be generated. Check your mentor dashboard and reconnect Google Calendar.
-                </div>
-              ) : booking.calendarStatus === 'mentor_calendar_not_connected' ? (
-                <div className="w-full py-3.5 bg-ivory-dark border border-grey-soft text-navy/60 rounded-xl text-sm text-center">
-                  Mentor has not connected Google Calendar — no Meet link available.
-                </div>
-              ) : booking.calendarStatus === 'not_configured' ? (
-                <div className="w-full py-3.5 bg-ivory-dark border border-grey-soft text-navy/60 rounded-xl text-sm text-center">
-                  Google Calendar is not configured on this server.
-                </div>
-              ) : null
-            )}
+            ) : booking.calendarStatus?.includes('error') || booking.calendarStatus === 'created_no_meet' ? (
+              <div className="w-full py-3.5 bg-maroon/8 border border-maroon/20 text-maroon rounded-xl text-sm text-center">
+                Google Meet could not be generated for this session. Please contact support.
+              </div>
+            ) : booking.calendarStatus === 'not_configured' ? (
+              <div className="w-full py-3.5 bg-ivory-dark border border-grey-soft text-navy/60 rounded-xl text-sm text-center">
+                Google Calendar is not configured on this server. Contact the HELPAMART admin.
+              </div>
+            ) : null}
 
             {/* Open Google Calendar */}
             <a

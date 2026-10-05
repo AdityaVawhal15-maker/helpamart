@@ -7,13 +7,14 @@
  *   2. Validate mentor / service / slot
  *   3. Compute first-session-free price from persistent history
  *   4. Double-booking check + atomic insert
- *   5. Google Calendar event + Google Meet conference
+ *   5. Google Calendar event + Google Meet conference (central HELPAMART account)
  *   6. Persist calendar_event_id + meet_link back to booking
  *   7. Send confirmation emails (mentor + mentee)
  *
  * Secrets (never exposed to the browser):
  *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
- *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_CALENDAR_REDIRECT_URI
+ *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+ *   HELPAMART_GOOGLE_REFRESH_TOKEN  — refresh token for the central HELPAMART Google account
  *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
  */
 
@@ -47,67 +48,38 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
   return user.id
 }
 
-// ─── Google Calendar helper ───────────────────────────────────────────────────
-async function getCalendarClient(mentorUserId: string, db: ReturnType<typeof adminSupabase>) {
-  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-    console.log(`[BOOK] Google Calendar env vars not set — skipping calendar for mentor ${mentorUserId.slice(0, 8)}`)
+// ─── Central HELPAMART Google Calendar client ─────────────────────────────────
+// One dedicated HELPAMART Google account is the event organizer for ALL bookings.
+// Mentor = attendee, Mentee = attendee.
+// Authorise once via /api/admin-calendar-connect, store the refresh token in
+// HELPAMART_GOOGLE_REFRESH_TOKEN (Vercel env var — never in the browser).
+function getCentralCalendarClient(): InstanceType<typeof google.auth.OAuth2> | null {
+  const clientId = process.env.GOOGLE_CLIENT_ID
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+  const refreshToken = process.env.HELPAMART_GOOGLE_REFRESH_TOKEN
+
+  if (!clientId || !clientSecret) {
+    console.log('[BOOK] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — skipping Calendar/Meet')
+    return null
+  }
+  if (!refreshToken) {
+    console.log('[BOOK] HELPAMART_GOOGLE_REFRESH_TOKEN not set — Google Calendar disabled. Run /api/admin-calendar-connect once to authorise.')
     return null
   }
 
-  const { data: conn, error: connErr } = await db
-    .from('calendar_connections')
-    .select('access_token, refresh_token, expiry, status')
-    .eq('user_id', mentorUserId)
-    .eq('status', 'connected')
-    .maybeSingle()
+  const oauth2 = new google.auth.OAuth2(clientId, clientSecret)
+  oauth2.setCredentials({ refresh_token: refreshToken })
 
-  if (connErr) {
-    console.error(`[BOOK] calendar_connections query error for mentor ${mentorUserId.slice(0, 8)}:`, connErr.message)
-    return null
-  }
-
-  if (!conn) {
-    console.log(`[BOOK] No connected calendar_connections row for mentor ${mentorUserId.slice(0, 8)} — mentor needs to connect Google Calendar`)
-    return null
-  }
-
-  if (!conn.refresh_token && !conn.access_token) {
-    console.warn(`[BOOK] calendar_connections row exists for mentor ${mentorUserId.slice(0, 8)} but both tokens are null — needs reconnect`)
-    return null
-  }
-
-  console.log(`[BOOK] Calendar connection found for mentor ${mentorUserId.slice(0, 8)}, status=${conn.status}, hasRefreshToken=${!!conn.refresh_token}`)
-
-  const oauth2 = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_CALENDAR_REDIRECT_URI || '',
-  )
-
-  oauth2.setCredentials({
-    access_token: conn.access_token ?? undefined,
-    refresh_token: conn.refresh_token ?? undefined,
-    expiry_date: conn.expiry ? Date.parse(conn.expiry) : undefined,
-  })
-
-  // Persist refreshed tokens back to DB
-  oauth2.on('tokens', async (tokens) => {
-    try {
-      await db.from('calendar_connections').update({
-        access_token: tokens.access_token ?? conn.access_token,
-        refresh_token: tokens.refresh_token ?? conn.refresh_token,
-        expiry: tokens.expiry_date ? new Date(tokens.expiry_date).toISOString() : conn.expiry,
-        updated_at: new Date().toISOString(),
-      }).eq('user_id', mentorUserId)
-    } catch {}
-  })
-
+  // Token refresh is handled automatically by the google-auth-library;
+  // no need to persist back to DB since the refresh token is in the env var.
   return oauth2
 }
 
 // ─── Create Google Calendar event + Meet conference ───────────────────────────
+// Uses the central HELPAMART Google account as organizer.
+// Mentor + mentee are added as attendees.
 async function createCalendarEvent(opts: {
-  auth: any
+  auth: InstanceType<typeof google.auth.OAuth2> | null
   mentorName: string
   menteeEmail: string | null
   mentorEmail: string | null
@@ -116,9 +88,8 @@ async function createCalendarEvent(opts: {
   timezone: string
   bookingId: string
   serviceTitle: string
-  db: ReturnType<typeof adminSupabase>
-  mentorUserId: string
 }): Promise<{ ok: boolean; eventId?: string | null; meetLink?: string | null; htmlLink?: string | null; reason?: string }> {
+  if (!opts.auth) return { ok: false, reason: 'no_calendar_auth' }
   try {
     const calendar = google.calendar({ version: 'v3', auth: opts.auth })
 
@@ -162,9 +133,6 @@ async function createCalendarEvent(opts: {
     const htmlLink = eventData.htmlLink ?? null
 
     // ── Extract Meet URL with proper pending-state polling ────────────────────
-    // Google documents that conferenceData.createRequest.status may initially be
-    // "pending" and transitions to "success" asynchronously.
-    // We poll up to 5 times (2 s apart → 10 s max) to wait for success.
     function extractMeetLink(ev: typeof eventData): string | null {
       return (
         ev.hangoutLink ||
@@ -185,11 +153,9 @@ async function createCalendarEvent(opts: {
     while (!meetLink && attempts < maxAttempts && eventData.id) {
       const status = conferenceStatus(eventData)
       if (status === 'failure') {
-        // Google explicitly failed to create the conference — stop polling
         console.warn(`[BOOK] Google Meet conference failed for event ${eventData.id}. status=failure`)
         break
       }
-      // status is "pending" or unknown — wait and re-fetch
       await new Promise(r => setTimeout(r, pollDelayMs))
       attempts++
       try {
@@ -208,23 +174,10 @@ async function createCalendarEvent(opts: {
       console.warn(`[BOOK] Meet URL not obtained after ${attempts} poll(s) for event ${eventData.id}. conferenceStatus=${conferenceStatus(eventData)}`)
     }
 
-    // Persist refreshed tokens if the OAuth client auto-refreshed
-    try {
-      const tokens = await opts.auth.getAccessToken()
-      if (tokens?.token) {
-        await opts.db.from('calendar_connections').update({
-          access_token: tokens.token,
-          updated_at: new Date().toISOString(),
-        }).eq('user_id', opts.mentorUserId)
-      }
-    } catch {}
-
     return { ok: true, eventId: eventData.id, meetLink, htmlLink }
   } catch (err: any) {
-    // Mark calendar connection as errored so dashboard can prompt reconnect
     const errMsg = err?.message || 'calendar_error'
-    console.error(`[BOOK] Google Calendar event creation failed for mentor ${opts.mentorUserId}:`, errMsg)
-    await opts.db.from('calendar_connections').update({ status: 'error' }).eq('user_id', opts.mentorUserId)
+    console.error('[BOOK] Google Calendar event creation failed:', errMsg)
     return { ok: false, reason: errMsg }
   }
 }
@@ -493,13 +446,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: `Could not create booking: ${insertErr.message}` })
     }
 
-    // 7. Google Calendar + Meet (non-blocking on calendar failure — booking is preserved)
+    // 7. Google Calendar + Meet via central HELPAMART Google account
     let meetLink: string | null = null
     let calendarEventId: string | null = null
     let calendarHtmlLink: string | null = null
     let calendarStatus = 'not_configured'
 
-    const calAuth = await getCalendarClient(mentorRow.user_id, db)
+    const calAuth = getCentralCalendarClient()
 
     if (calAuth) {
       const calResult = await createCalendarEvent({
@@ -512,8 +465,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         timezone,
         bookingId,
         serviceTitle: service.title,
-        db,
-        mentorUserId: mentorRow.user_id,
       })
 
       if (calResult.ok) {
@@ -523,21 +474,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         calendarStatus = meetLink ? 'created' : 'created_no_meet'
       } else {
         calendarStatus = calResult.reason || 'calendar_error'
-        console.warn(`[BOOK] Calendar creation failed for booking ${bookingId}: ${calResult.reason}`)
+        console.warn(`[BOOK] Calendar/Meet creation failed for booking ${bookingId}: ${calResult.reason}`)
       }
 
-      // Persist Calendar/Meet data back to booking (including the Calendar event HTML link)
       await db.from('bookings').update({
         meet_link: meetLink,
         calendar_event_id: calendarEventId,
-        calendar_html_link: calResult.htmlLink ?? null,
+        calendar_html_link: calendarHtmlLink,
         calendar_status: calendarStatus,
         updated_at: new Date().toISOString(),
       }).eq('id', bookingId)
     } else {
-      calendarStatus = process.env.GOOGLE_CLIENT_ID ? 'mentor_calendar_not_connected' : 'not_configured'
       await db.from('bookings').update({
-        calendar_status: calendarStatus,
+        calendar_status: 'not_configured',
         updated_at: new Date().toISOString(),
       }).eq('id', bookingId)
     }
