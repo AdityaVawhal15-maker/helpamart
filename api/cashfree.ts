@@ -204,7 +204,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ error: 'mentorSlug, startAt, and timezone are required.' })
       }
 
-      console.log('[CASHFREE] init-paid-booking for mentor:', mentorSlug)
+      console.log('[CASHFREE] FLOW START: init-paid-booking')
+      console.log('[CASHFREE] authenticated user:', userId)
 
       // STEP 1: Resolve mentor from public.mentors (ONLY columns that exist)
       const { data: mentorRow, error: mentorErr } = await db
@@ -220,8 +221,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       if (!mentorRow) {
+        console.error('[CASHFREE] Mentor not found for slug:', mentorSlug)
         return res.status(404).json({ error: 'This mentor is not currently available.' })
       }
+
+      console.log('[CASHFREE] mentor resolved:', mentorRow.id, mentorRow.name)
 
       // STEP 2: Get mentor email from public.profiles using user_id
       const { data: mentorProfile, error: profileErr } = await db
@@ -237,6 +241,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const mentorEmail = mentorProfile?.email || 'mentor@helpamart.com'
       const mentorName = mentorProfile?.full_name || mentorRow.name
+      console.log('[CASHFREE] mentor profile resolved:', mentorEmail)
 
       // STEP 3: Get authenticated user's profile for student email and name
       const { data: userProfile, error: userProfileErr } = await db
@@ -252,15 +257,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const studentEmail = userProfile?.email || 'user@helpamart.com'
       const studentName = userProfile?.full_name || 'User'
+      console.log('[CASHFREE] student profile resolved:', studentEmail)
 
       // STEP 4: Resolve service
       const services = Array.isArray(mentorRow.services) ? mentorRow.services : []
+      console.log('[CASHFREE] Available services:', services.length, 'serviceId requested:', serviceId)
+
       const service = serviceId
         ? services.find((s: any) => s.id === serviceId || s.title === serviceId) ?? services[0]
         : services[0]
 
       if (!service) {
+        console.error('[CASHFREE] No service found')
         return res.status(400).json({ error: 'This session type is no longer available.' })
+      }
+
+      console.log('[CASHFREE] Service resolved:', { id: service.id, title: service.title })
+
+      // Validate service.id exists (required for bookings.service_id NOT NULL constraint)
+      if (!service.id) {
+        console.error('[CASHFREE] Service has no ID. Generating deterministic ID from title.')
+        // Generate deterministic ID from service title if missing
+        service.id = `svc-${mentorRow.id.slice(0, 8)}-${service.title.toLowerCase().replace(/\s+/g, '-')}`
+        console.log('[CASHFREE] Generated service ID:', service.id)
       }
 
       // STEP 5: Calculate time
@@ -281,13 +300,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .in('payment_status', ['not_required', 'completed'])
 
       const isFirstSession = (prevBookings ?? 0) === 0
+      console.log('[CASHFREE] previous successful bookings count:', prevBookings ?? 0, 'isFirstSession:', isFirstSession)
+
       if (isFirstSession) {
+        console.log('[CASHFREE] REJECTED: First session is free')
         return res.status(400).json({ error: 'First session is free. Use regular booking flow.' })
       }
+
+      console.log('[CASHFREE] VERIFIED: Returning user (paid session allowed)')
 
       // STEP 7: Create provisional booking (UNPAID STATE)
       // Use status='pending' (allowed by constraint), payment_status='pending' to track payment state
       const provisionalBookingId = crypto.randomUUID()
+      console.log('[CASHFREE] Creating provisional booking:', provisionalBookingId)
 
       const { error: bookingErr } = await db.from('bookings').insert({
         id: provisionalBookingId,
@@ -309,17 +334,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }).select()
 
       if (bookingErr) {
-        console.error('[CASHFREE] Provisional booking INSERT failed:')
+        console.error('[CASHFREE] PROVISIONAL BOOKING INSERT FAILED')
         console.error('  code:', bookingErr.code)
         console.error('  message:', bookingErr.message)
         console.error('  details:', bookingErr.details)
         console.error('  hint:', bookingErr.hint)
-        return res.status(500).json({ error: 'Unable to initialize your booking. Please try again.' })
+        console.error('  Attempted INSERT with:')
+        console.error('    id:', provisionalBookingId)
+        console.error('    mentor_id:', mentorRow.id)
+        console.error('    mentee_id:', userId)
+        console.error('    service_id:', service.id)
+        console.error('    service_title:', service.title)
+        console.error('    start_at:', start.toISOString())
+        console.error('    end_at:', end.toISOString())
+        console.error('    timezone:', timezone)
+        console.error('    status: pending')
+        console.error('    payment_status: pending')
+        console.error('    price_cents: 9900')
+        console.error('    currency: INR')
+        console.error('    payment_provider: cashfree')
+        console.error('    mentor_email:', mentorEmail)
+        console.error('    student_email:', studentEmail)
+        return res.status(500).json({ error: 'Unable to create the booking record. Please try again.' })
       }
 
-      console.log('[CASHFREE] Provisional booking created:', provisionalBookingId, 'for user:', userId, 'mentor:', mentorName)
+      console.log('[CASHFREE] Provisional booking created successfully:', provisionalBookingId)
 
       // STEP 8: Create Cashfree order
+      console.log('[CASHFREE] Creating Cashfree order for booking:', provisionalBookingId)
       try {
         const { payment_session_id, order_id } = await createPaymentOrder({
           bookingId: provisionalBookingId,
@@ -330,17 +372,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           customerName: studentName,
         })
 
+        console.log('[CASHFREE] Cashfree order created:', order_id)
+
         // Link Cashfree order to provisional booking
-        await db
+        const { error: updateErr } = await db
           .from('bookings')
           .update({
             cashfree_order_id: order_id,
           })
           .eq('id', provisionalBookingId)
 
-        console.log('[CASHFREE] Returning payment details:', {
+        if (updateErr) {
+          console.error('[CASHFREE] Failed to link Cashfree order to booking:', updateErr.message)
+          // Still return success as order exists - re-linking on next attempt will work
+        }
+
+        console.log('[CASHFREE] SUCCESS: init-paid-booking complete', {
           booking_id: provisionalBookingId,
           order_id,
+          mentor: mentorName,
+          student: studentName,
+          amount_cents: 9900,
           payment_session_id: payment_session_id.slice(0, 20) + '...',
         })
 
