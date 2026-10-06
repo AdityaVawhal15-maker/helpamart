@@ -20,7 +20,6 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
-import crypto from 'crypto'
 
 // ─── Supabase admin client (service-role — server only) ──────────────────────
 function adminSupabase() {
@@ -47,7 +46,7 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
   return user.id
 }
 
-// ─── Cashfree API helper ──────────────────────────────────────────────────────
+// ─── Cashfree API helper (Sandbox only, current API 2025-01-01) ────────────────
 async function cashfreeRequest(
   endpoint: string,
   body?: Record<string, any>,
@@ -55,9 +54,9 @@ async function cashfreeRequest(
 ): Promise<any> {
   const appId = process.env.CASHFREE_APP_ID
   const secretKey = process.env.CASHFREE_SECRET_KEY
-  const baseUrl = process.env.CASHFREE_MODE === 'production'
-    ? 'https://api.cashfree.com'
-    : 'https://sandbox.cashfree.com'
+
+  // Sandbox only (production not used in this phase)
+  const baseUrl = 'https://sandbox.cashfree.com'
 
   if (!appId || !secretKey) {
     console.error('[CASHFREE] CRITICAL: CASHFREE_APP_ID or CASHFREE_SECRET_KEY not set')
@@ -65,32 +64,47 @@ async function cashfreeRequest(
   }
 
   const url = `${baseUrl}/pg${endpoint}`
-  const timestamp = Date.now().toString()
-  const signatureString = `${endpoint}${timestamp}${JSON.stringify(body || {})}`
-  crypto
-    .createHmac('sha256', secretKey)
-    .update(signatureString)
-    .digest('base64')
 
-  const res = await fetch(url, {
+  // Build headers based on method
+  const headers: Record<string, string> = {
+    'x-client-id': appId,
+    'x-client-secret': secretKey,
+    'x-api-version': '2025-01-01', // Updated to current version
+    'Accept': 'application/json',
+  }
+
+  // For POST requests, add Content-Type
+  if (method === 'POST' && body) {
+    headers['Content-Type'] = 'application/json'
+  }
+
+  const fetchOptions: RequestInit = {
     method,
-    headers: {
-      'x-api-version': '2023-08-01',
-      'x-client-id': appId,
-      'x-client-secret': secretKey,
-      'x-request-id': crypto.randomUUID(),
-      'x-idempotency-key': crypto.randomUUID(),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  })
+    headers,
+  }
 
+  // Only add body for POST requests
+  if (method === 'POST' && body) {
+    fetchOptions.body = JSON.stringify(body)
+  }
+
+  console.log(`[CASHFREE] ${method} ${endpoint}`)
+
+  const res = await fetch(url, fetchOptions)
   const json = await res.json().catch(() => ({}))
 
   if (!res.ok) {
     const errorMsg = (json as any)?.message || (json as any)?.error || `HTTP ${res.status}`
-    console.error('[CASHFREE] API error:', errorMsg, 'Response:', JSON.stringify(json))
-    throw new Error(`Cashfree error: ${errorMsg}`)
+    const errorCode = (json as any)?.code || 'UNKNOWN'
+    console.error('[CASHFREE] API ERROR:')
+    console.error('  Status:', res.status)
+    console.error('  Code:', errorCode)
+    console.error('  Message:', errorMsg)
+    console.error('  Response:', JSON.stringify(json))
+    throw new Error(`Cashfree error (${res.status}): ${errorMsg}`)
   }
+
+  console.log(`[CASHFREE] ${method} ${endpoint} → Success`)
 
   return json
 }
@@ -104,32 +118,41 @@ async function createPaymentOrder(opts: {
   customerEmail: string
   customerName: string
 }): Promise<{ payment_session_id: string; order_id: string }> {
-  console.log('[CASHFREE] Creating payment order for booking:', opts.bookingId)
+  console.log('[CASHFREE] Creating payment order for booking:', opts.bookingId, 'amount:', opts.amount)
 
-  // Use booking ID as idempotency key (Cashfree will reject duplicate orders)
+  // Generate unique order ID (format: BOOK-{booking_prefix}-{timestamp})
   const orderId = `BOOK-${opts.bookingId.slice(0, 8).toUpperCase()}-${Date.now()}`
 
-  const orderResponse = await cashfreeRequest('/orders', {
+  // Convert cents to rupees (9900 cents = 99 rupees)
+  const orderAmount = opts.amount / 100
+
+  const orderBody = {
     order_id: orderId,
-    order_amount: (opts.amount / 100).toString(), // Convert cents to rupees
-    order_currency: opts.currency,
+    order_amount: orderAmount, // Must be a number, not string
+    order_currency: opts.currency || 'INR',
     customer_details: {
       customer_id: opts.userId,
       customer_email: opts.customerEmail,
-      customer_phone: '9999999999', // Placeholder — Cashfree requires this
+      customer_phone: '9999999999', // Placeholder (Cashfree requires this)
       customer_name: opts.customerName,
     },
     order_meta: {
-      return_url: `${process.env.APP_URL || 'https://www.helpamart.com'}/booking-payment-result`,
+      return_url: `${process.env.APP_URL || 'https://www.helpamart.com'}/booking-payment-result?order_id=${orderId}`,
       notify_url: `${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://www.helpamart.com'}/api/cashfree-webhook`,
     },
-  })
+  }
+
+  console.log('[CASHFREE] Order body:', JSON.stringify(orderBody, null, 2))
+
+  const orderResponse = await cashfreeRequest('/orders', orderBody, 'POST')
 
   if (!orderResponse?.payment_session_id) {
+    console.error('[CASHFREE] No payment_session_id in response:', JSON.stringify(orderResponse))
     throw new Error('Cashfree did not return payment_session_id')
   }
 
-  console.log('[CASHFREE] Order created:', orderId, 'session_id:', orderResponse.payment_session_id.slice(0, 20) + '...')
+  console.log('[CASHFREE] Order created:', orderId)
+  console.log('[CASHFREE] Payment session ID:', orderResponse.payment_session_id.slice(0, 20) + '...')
 
   return {
     payment_session_id: orderResponse.payment_session_id,
@@ -137,7 +160,7 @@ async function createPaymentOrder(opts: {
   }
 }
 
-// ─── Verify payment status ────────────────────────────────────────────────────
+// ─── Verify payment status (GET /pg/orders/{order_id}/payments) ────────────────
 async function verifyPaymentStatus(orderId: string): Promise<{
   payment_status: string
   amount: number
@@ -146,26 +169,51 @@ async function verifyPaymentStatus(orderId: string): Promise<{
   console.log('[CASHFREE] Verifying payment for order:', orderId)
 
   try {
-    const paymentResponse = await cashfreeRequest(`/orders/${orderId}`, undefined, 'GET')
+    // Use correct endpoint: /pg/orders/{order_id}/payments
+    const paymentsResponse = await cashfreeRequest(`/orders/${orderId}/payments`, undefined, 'GET')
 
-    const paymentStatus = paymentResponse?.order_status || paymentResponse?.status || 'unknown'
-    const amount = paymentResponse?.order_amount
-      ? Math.round(parseFloat(paymentResponse.order_amount) * 100)
-      : 0
+    console.log('[CASHFREE] Payments endpoint response:', JSON.stringify(paymentsResponse))
 
-    console.log('[CASHFREE] Payment status:', paymentStatus, 'amount:', amount)
+    // paymentsResponse should be an array of transactions or object with payments array
+    const payments = Array.isArray(paymentsResponse) ? paymentsResponse : paymentsResponse?.data || []
 
-    if (paymentStatus === 'PAID' || paymentStatus === 'SETTLED') {
-      return { payment_status: 'completed', amount }
-    } else if (paymentStatus === 'PENDING') {
-      return { payment_status: 'pending', amount }
-    } else if (paymentStatus === 'FAILED' || paymentStatus === 'CANCELLED') {
-      return { payment_status: 'failed', amount, error: paymentStatus }
+    if (!payments || payments.length === 0) {
+      console.log('[CASHFREE] No payments found for order:', orderId)
+      return { payment_status: 'pending', amount: 0 }
     }
 
-    return { payment_status: paymentStatus, amount }
+    // Look for a successful payment
+    const successfulPayment = payments.find(
+      (p: any) => p.payment_status === 'SUCCESS' || p.payment_status === 'success'
+    )
+
+    if (successfulPayment) {
+      const amount = successfulPayment.payment_amount
+        ? Math.round(parseFloat(successfulPayment.payment_amount) * 100)
+        : 0
+      console.log('[CASHFREE] Successful payment found:', {
+        payment_status: 'completed',
+        amount,
+        payment_id: successfulPayment.cf_payment_id,
+      })
+      return { payment_status: 'completed', amount }
+    }
+
+    // Check for failed payments
+    const failedPayment = payments.find(
+      (p: any) => p.payment_status === 'FAILED' || p.payment_status === 'failed'
+    )
+
+    if (failedPayment) {
+      console.log('[CASHFREE] Failed payment found:', failedPayment.payment_status)
+      return { payment_status: 'failed', amount: 0, error: failedPayment.payment_status }
+    }
+
+    // All other statuses are pending
+    console.log('[CASHFREE] Payment still pending')
+    return { payment_status: 'pending', amount: 0 }
   } catch (err: any) {
-    console.error('[CASHFREE] Verification error:', err.message)
+    console.error('[CASHFREE] Payment verification error:', err.message)
     throw err
   }
 }

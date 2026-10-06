@@ -2,6 +2,7 @@
  * HELPAMART — CashfreeCheckout Component
  *
  * Displays Cashfree Hosted Checkout for paid bookings.
+ * Uses Cashfree SDK v3 with correct initialization.
  *
  * IMPORTANT: This component RECEIVES a pre-initialized payment session from BookingFlow.
  * It does NOT create a second Cashfree order.
@@ -34,10 +35,7 @@ import { Button } from './Button'
 
 declare global {
   interface Window {
-    Cashfree?: {
-      load: (libraryId: string) => void
-      checkout: (config: any) => Promise<any>
-    }
+    Cashfree?: any
   }
 }
 
@@ -69,16 +67,16 @@ export function CashfreeCheckout({
   const scriptLoadedRef = useRef(false)
   const checkoutOpenedRef = useRef(false)
 
-  // Load Cashfree checkout script and open checkout
+  // Load Cashfree checkout script (correct URL: v3/cashfree.js)
   useEffect(() => {
     if (scriptLoadedRef.current) return
 
     const script = document.createElement('script')
-    script.src = 'https://sdk.cashfree.com/js/sdk/v3.js'
+    script.src = 'https://sdk.cashfree.com/js/v3/cashfree.js'  // Updated to correct URL
     script.async = true
     script.onload = () => {
       scriptLoadedRef.current = true
-      console.log('[CASHFREE] Script loaded, opening checkout')
+      console.log('[CASHFREE] Script loaded, initializing checkout')
       openCheckout()
     }
     script.onerror = () => {
@@ -100,29 +98,41 @@ export function CashfreeCheckout({
     if (checkoutOpenedRef.current) return
     checkoutOpenedRef.current = true
 
-    console.log('[CASHFREE] Opening checkout with payment_session_id:', paymentSessionId.slice(0, 20) + '...')
+    console.log('[CASHFREE] Opening checkout')
+    console.log('[CASHFREE]   bookingId:', bookingId)
+    console.log('[CASHFREE]   orderId:', orderId)
+    console.log('[CASHFREE]   paymentSessionId:', paymentSessionId.slice(0, 20) + '...')
 
-    if (!window.Cashfree?.checkout) {
+    if (!window.Cashfree) {
       setError('Payment service not available. Please refresh and try again.')
       onError?.('Payment service not available')
       return
     }
 
     try {
-      const checkoutResponse = await window.Cashfree.checkout({
-        paymentSessionId,
+      // Initialize Cashfree SDK with mode: sandbox
+      const cashfree = window.Cashfree({
+        mode: 'sandbox',
+      })
+
+      console.log('[CASHFREE] SDK initialized, opening hosted checkout')
+
+      // Open hosted checkout with payment_session_id
+      const result = await cashfree.checkout({
+        paymentSessionId: paymentSessionId,
         redirectTarget: '_self',
       })
-      console.log('[CASHFREE] Checkout returned:', checkoutResponse)
 
-      // After Cashfree checkout closes, verify the payment
-      // This gives Cashfree time to process and return
+      console.log('[CASHFREE] Checkout returned:', result)
+
+      // After checkout completes, verify the payment
+      // Give Cashfree a moment to process
       setTimeout(() => {
         handleVerifyPayment()
-      }, 500)
+      }, 1000)
     } catch (err: any) {
       const msg = err?.message || 'Payment checkout error'
-      console.error('[CASHFREE] Checkout error:', msg)
+      console.error('[CASHFREE] Checkout error:', msg, err)
       setError(msg)
       onCancel?.()
     }
@@ -143,11 +153,13 @@ export function CashfreeCheckout({
         throw new Error('Your session has expired. Please sign in again.')
       }
 
+      console.log('[CASHFREE] Got Supabase session, calling verify-payment endpoint')
+
       const response = await fetch('/api/cashfree', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
+          'Authorization': `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           action: 'verify-payment',
