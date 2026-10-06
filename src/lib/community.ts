@@ -58,7 +58,7 @@ export async function getCommunityPosts(options?: {
       .from('community_posts')
       .select(
         `id, title, body, category, author_id, likes_count, created_at, updated_at,
-         author:profiles(id, name),
+         author:profiles(id, full_name, avatar_url),
          replies:community_replies(id)`,
         { count: 'exact' }
       )
@@ -102,7 +102,7 @@ export async function getCommunityPosts(options?: {
       body: post.body,
       category: post.category,
       author_id: post.author_id,
-      author_name: (post.author && post.author[0]?.name) || 'Community Member',
+      author_name: (post.author && post.author[0]?.full_name) || 'Community Member',
       likes_count: post.likes_count || 0,
       created_at: post.created_at,
       updated_at: post.updated_at,
@@ -130,7 +130,7 @@ export async function getCommunityPost(postId: string): Promise<CommunityPost | 
       .from('community_posts')
       .select(
         `id, title, body, category, author_id, likes_count, created_at, updated_at,
-         author:profiles(id, name)`
+         author:profiles(id, full_name, avatar_url)`
       )
       .eq('id', postId)
       .single()
@@ -163,7 +163,7 @@ export async function getCommunityPost(postId: string): Promise<CommunityPost | 
       body: post.body,
       category: post.category,
       author_id: post.author_id,
-      author_name: (post.author && post.author[0]?.name) || 'Community Member',
+      author_name: (post.author && post.author[0]?.full_name) || 'Community Member',
       likes_count: post.likes_count || 0,
       created_at: post.created_at,
       updated_at: post.updated_at,
@@ -210,7 +210,7 @@ export async function createCommunityPost(input: {
         likes_count: 0,
       })
       .select(`id, title, body, category, author_id, likes_count, created_at, updated_at,
-               author:profiles(id, name)`)
+               author:profiles(id, full_name, avatar_url)`)
       .single()
 
     if (error) throw error
@@ -221,7 +221,7 @@ export async function createCommunityPost(input: {
       body: post.body,
       category: post.category,
       author_id: post.author_id,
-      author_name: (post.author && post.author[0]?.name) || 'Community Member',
+      author_name: (post.author && post.author[0]?.full_name) || 'Community Member',
       likes_count: 0,
       created_at: post.created_at,
       updated_at: post.updated_at,
@@ -259,7 +259,7 @@ export async function updateCommunityPost(
       })
       .eq('id', postId)
       .select(`id, title, body, category, author_id, likes_count, created_at, updated_at,
-               author:profiles(id, name)`)
+               author:profiles(id, full_name, avatar_url)`)
       .single()
 
     if (error) throw error
@@ -276,7 +276,7 @@ export async function updateCommunityPost(
       body: post.body,
       category: post.category,
       author_id: post.author_id,
-      author_name: (post.author && post.author[0]?.name) || 'Community Member',
+      author_name: (post.author && post.author[0]?.full_name) || 'Community Member',
       likes_count: post.likes_count || 0,
       created_at: post.created_at,
       updated_at: post.updated_at,
@@ -322,7 +322,7 @@ export async function getCommunityReplies(postId: string): Promise<CommunityRepl
     const { data: replies, error } = await supabase
       .from('community_replies')
       .select(`id, post_id, author_id, body, created_at, updated_at,
-               author:profiles(id, name)`)
+               author:profiles(id, full_name, avatar_url)`)
       .eq('post_id', postId)
       .order('created_at', { ascending: true })
 
@@ -332,7 +332,7 @@ export async function getCommunityReplies(postId: string): Promise<CommunityRepl
       id: reply.id,
       post_id: reply.post_id,
       author_id: reply.author_id,
-      author_name: (reply.author && reply.author[0]?.name) || 'Community Member',
+      author_name: (reply.author && reply.author[0]?.full_name) || 'Community Member',
       body: reply.body,
       created_at: reply.created_at,
       updated_at: reply.updated_at,
@@ -368,7 +368,7 @@ export async function createCommunityReply(
         body: body.trim(),
       })
       .select(`id, post_id, author_id, body, created_at, updated_at,
-               author:profiles(id, name)`)
+               author:profiles(id, full_name, avatar_url)`)
       .single()
 
     if (error) throw error
@@ -377,7 +377,7 @@ export async function createCommunityReply(
       id: reply.id,
       post_id: reply.post_id,
       author_id: reply.author_id,
-      author_name: (reply.author && reply.author[0]?.name) || 'Community Member',
+      author_name: (reply.author && reply.author[0]?.full_name) || 'Community Member',
       body: reply.body,
       created_at: reply.created_at,
       updated_at: reply.updated_at,
@@ -412,7 +412,7 @@ export async function updateCommunityReply(
       })
       .eq('id', replyId)
       .select(`id, post_id, author_id, body, created_at, updated_at,
-               author:profiles(id, name)`)
+               author:profiles(id, full_name, avatar_url)`)
       .single()
 
     if (error) throw error
@@ -421,7 +421,7 @@ export async function updateCommunityReply(
       id: reply.id,
       post_id: reply.post_id,
       author_id: reply.author_id,
-      author_name: (reply.author && reply.author[0]?.name) || 'Community Member',
+      author_name: (reply.author && reply.author[0]?.full_name) || 'Community Member',
       body: reply.body,
       created_at: reply.created_at,
       updated_at: reply.updated_at,
