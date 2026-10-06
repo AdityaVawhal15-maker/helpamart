@@ -300,6 +300,8 @@ export default function BookingFlow() {
 
             <CashfreeCheckout
               bookingId={bookingId}
+              orderId={sessionStorage.getItem('pendingOrderId') || ''}
+              paymentSessionId={sessionStorage.getItem('paymentSessionId') || ''}
               amount={displayPriceCents}
               currency={displayCurrency}
               onSuccess={() => {
@@ -320,7 +322,11 @@ export default function BookingFlow() {
                 sessionStorage.removeItem('paymentSessionId')
               }}
               onRetry={() => {
-                // Retry is handled within CashfreeCheckout component
+                // Retry: clear state and go back to confirm to re-initialize payment
+                setStep('confirm')
+                sessionStorage.removeItem('pendingBookingId')
+                sessionStorage.removeItem('pendingOrderId')
+                sessionStorage.removeItem('paymentSessionId')
               }}
             />
 

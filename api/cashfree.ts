@@ -288,7 +288,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // STEP 7: Create provisional booking (UNPAID STATE)
       // Use status='pending' (allowed by constraint), payment_status='pending' to track payment state
       const provisionalBookingId = crypto.randomUUID()
-      const now = new Date().toISOString()
 
       const { error: bookingErr } = await db.from('bookings').insert({
         id: provisionalBookingId,
@@ -307,13 +306,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         meet_link: null,
         mentor_email: mentorEmail,
         student_email: studentEmail,
-        created_at: now,
-        updated_at: now,
-      })
+      }).select()
 
       if (bookingErr) {
-        console.error('[CASHFREE] Failed to create provisional booking:', bookingErr.message)
-        return res.status(500).json({ error: 'Failed to create booking. Please try again.' })
+        console.error('[CASHFREE] Provisional booking INSERT failed:')
+        console.error('  code:', bookingErr.code)
+        console.error('  message:', bookingErr.message)
+        console.error('  details:', bookingErr.details)
+        console.error('  hint:', bookingErr.hint)
+        return res.status(500).json({ error: 'Unable to initialize your booking. Please try again.' })
       }
 
       console.log('[CASHFREE] Provisional booking created:', provisionalBookingId, 'for user:', userId, 'mentor:', mentorName)
@@ -334,7 +335,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .from('bookings')
           .update({
             cashfree_order_id: order_id,
-            updated_at: now,
           })
           .eq('id', provisionalBookingId)
 
