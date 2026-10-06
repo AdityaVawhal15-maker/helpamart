@@ -1,15 +1,18 @@
 /**
  * HELPAMART — POST /api/cashfree
  *
+ * ⚠️  DEPRECATED: This endpoint is kept for webhook handling only.
+ * ⚠️  DO NOT use this for new booking payments. Use /api/razorpay instead.
+ *
  * Vercel serverless function (Node.js runtime).
  * Handles Cashfree payment order creation and verification.
  *
  * ENDPOINTS:
  *   POST /api/cashfree { action: 'create-order', bookingId, amount, currency }
- *     → Create Cashfree order, return payment_session_id for frontend checkout
+ *     → [DEPRECATED] Create Cashfree order, return payment_session_id for frontend checkout
  *
  *   POST /api/cashfree { action: 'verify-payment', orderId }
- *     → Verify payment status with Cashfree, confirm booking if successful
+ *     → [DEPRECATED] Verify payment status with Cashfree, confirm booking if successful
  *
  * SECURITY:
  *   - Verify Supabase JWT from Authorization header

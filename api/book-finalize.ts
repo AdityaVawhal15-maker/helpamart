@@ -319,6 +319,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log('[FINALIZE] Booking finalized:', bookingId)
 
+    // Create in-app notifications with real Meet URL
+    try {
+      const notifications = [
+        {
+          user_id: userId,
+          title: 'Session Ready',
+          message: `Your session with ${mentorName} is ready. Join the Google Meet at the scheduled time.`,
+          link: meetUrl,
+        },
+      ]
+      if (mentor?.user_id) {
+        notifications.push({
+          user_id: mentor.user_id,
+          title: 'Session Ready',
+          message: `Your session is ready. Join the Google Meet at the scheduled time.`,
+          link: meetUrl,
+        })
+      }
+      await db.from('notifications').insert(notifications)
+      console.log('[FINALIZE] Notifications created with Meet URL')
+    } catch (notifErr: any) {
+      console.warn('[FINALIZE] Notification creation error:', notifErr?.message)
+    }
+
     return res.status(200).json({
       booking: {
         id: bookingId,

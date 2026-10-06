@@ -5,7 +5,7 @@ import { CheckCircle, Calendar, Clock, Globe, ArrowLeft, Loader2, VideoIcon, Ind
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
-import { CashfreeCheckout } from '@/components/ui/CashfreeCheckout'
+import { RazorpayCheckout } from '@/components/ui/RazorpayCheckout'
 import type { MentorService } from '@/types'
 
 type State = {
@@ -115,13 +115,6 @@ export default function BookingFlow() {
     if (submitting) return
     if (!user) { navigate(`/login?next=/mentor/${slug}`); return }
 
-    // For free sessions, proceed directly to booking creation
-    if (displayPriceCents === 0) {
-      proceedToBookingCreation()
-      return
-    }
-
-    // For paid sessions, create provisional booking first
     setSubmitting(true)
     setStep('processing')
 
@@ -130,15 +123,55 @@ export default function BookingFlow() {
       const token = sessionData?.session?.access_token
       if (!token) throw new Error('Session expired. Please sign in again.')
 
-      // Create provisional booking and get payment details
-      const res = await fetch(`${API_BASE}/api/cashfree`, {
+      // FLOW A: FREE FIRST SESSION
+      if (displayPriceCents === 0) {
+        console.log('[BOOKING] Free session flow - calling /api/book directly')
+        
+        const res = await fetch(`${API_BASE}/api/book`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'X-Idempotency-Key': idempotencyKey,
+          },
+          body: JSON.stringify({
+            mentorSlug: slug,
+            serviceId: service.id,
+            startAt,
+            timezone,
+          }),
+        })
+
+        const json = await res.json().catch(() => ({}))
+
+        if (!res.ok) {
+          const errData = json as { error?: string }
+          throw new Error(errData.error || 'Failed to create free booking. Please try again.')
+        }
+
+        const result = json as { booking: BookingResult }
+        const meetUrl = result?.booking?.meetUrl || result?.booking?.meetLink
+        if (!result?.booking?.id || !meetUrl) {
+          throw new Error('Google Meet room could not be created. Please try again.')
+        }
+
+        console.log('[BOOKING] Free booking created successfully:', result.booking.id)
+        setBooking({ ...result.booking, meetLink: meetUrl, meetUrl })
+        setStep('done')
+        return
+      }
+
+      // FLOW B: PAID SESSION (RAZORPAY)
+      console.log('[BOOKING] Paid session flow - calling /api/razorpay to init order')
+      
+      const res = await fetch(`${API_BASE}/api/razorpay`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
-          action: 'init-paid-booking',
+          action: 'init-order',
           mentorSlug: slug,
           serviceId: service.id,
           startAt,
@@ -153,92 +186,20 @@ export default function BookingFlow() {
         throw new Error(errData.error || 'Failed to initiate payment. Please try again.')
       }
 
-      const { booking_id, order_id, payment_session_id } = json as { 
+      const { booking_id, razorpay_order_id, razorpay_key_id } = json as {
         booking_id: string
-        order_id: string
-        payment_session_id: string
+        razorpay_order_id: string
+        razorpay_key_id: string
       }
 
-      // Now show payment UI with real booking and order IDs
-      setStep('payment')
-      // Store the real IDs for payment component
+      console.log('[BOOKING] Razorpay order initialized:', razorpay_order_id)
+
+      // Store for Razorpay component
       sessionStorage.setItem('pendingBookingId', booking_id)
-      sessionStorage.setItem('pendingOrderId', order_id)
-      sessionStorage.setItem('paymentSessionId', payment_session_id)
-    } catch (err: unknown) {
-      const msg = (err as Error).message || 'Failed to initialize payment.'
-      toast(msg, 'error')
-      setStep('confirm')
-    } finally {
-      setSubmitting(false)
-    }
-  }
+      sessionStorage.setItem('razorpayOrderId', razorpay_order_id)
+      sessionStorage.setItem('razorpayKeyId', razorpay_key_id)
 
-  async function proceedToBookingCreation() {
-    if (submitting) return
-    if (!user) { navigate(`/login?next=/mentor/${slug}`); return }
-
-    setSubmitting(true)
-    setStep('processing')
-
-    try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const token = sessionData?.session?.access_token
-      if (!token) throw new Error('Session expired. Please sign in again.')
-
-      const bookingId = sessionStorage.getItem('pendingBookingId')
-
-      if (!bookingId) {
-        throw new Error('Booking not found.')
-      }
-
-      // For free sessions: use /api/book (creates booking + Meet)
-      // For paid sessions: use /api/book-finalize (creates Meet for existing provisional booking)
-      const endpoint = displayPriceCents === 0 ? '/api/book' : '/api/book-finalize'
-
-      const body = displayPriceCents === 0
-        ? {
-            mentorSlug: slug,
-            serviceId: service.id,
-            startAt,
-            timezone,
-          }
-        : {
-            bookingId,
-          }
-
-      const res = await fetch(`${API_BASE}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'X-Idempotency-Key': idempotencyKey,
-        },
-        body: JSON.stringify(body),
-      })
-
-      const json = await res.json().catch(() => ({}))
-
-      if (!res.ok) {
-        const errData = json as { error?: string; hint?: string }
-        const msg = errData.error || 'Booking failed. Please try again.'
-        const hint = errData.hint ? ` (${errData.hint})` : ''
-        throw new Error(msg + hint)
-      }
-
-      const result = json as { booking: BookingResult }
-      const meetUrl = result?.booking?.meetUrl || result?.booking?.meetLink
-      if (!result?.booking?.id || !meetUrl) {
-        throw new Error('Google Meet room could not be created. Please try again.')
-      }
-
-      // Clear session storage
-      sessionStorage.removeItem('pendingBookingId')
-      sessionStorage.removeItem('pendingOrderId')
-      sessionStorage.removeItem('paymentSessionId')
-
-      setBooking({ ...result.booking, meetLink: meetUrl, meetUrl })
-      setStep('done')
+      setStep('payment')
     } catch (err: unknown) {
       const msg = (err as Error).message || 'Booking failed. Please try again.'
       toast(msg, 'error')
@@ -261,8 +222,8 @@ export default function BookingFlow() {
               onClick={() => {
                 setStep('confirm')
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('pendingOrderId')
-                sessionStorage.removeItem('paymentSessionId')
+                sessionStorage.removeItem('razorpayOrderId')
+                sessionStorage.removeItem('razorpayKeyId')
               }}
               className="mt-4 text-blue-600 hover:underline"
             >
@@ -280,8 +241,8 @@ export default function BookingFlow() {
             onClick={() => {
               setStep('confirm')
               sessionStorage.removeItem('pendingBookingId')
-              sessionStorage.removeItem('pendingOrderId')
-              sessionStorage.removeItem('paymentSessionId')
+              sessionStorage.removeItem('razorpayOrderId')
+              sessionStorage.removeItem('razorpayKeyId')
             }}
             className="flex items-center gap-2 text-sm text-grey hover:text-navy transition-colors mb-8 group"
           >
@@ -296,21 +257,45 @@ export default function BookingFlow() {
             className="bg-white rounded-3xl shadow-soft p-8"
           >
             <h1 className="text-display-md font-display text-navy mb-1">Complete payment</h1>
-            <p className="text-grey text-sm mb-8">Secure payment via Cashfree Sandbox</p>
+            <p className="text-grey text-sm mb-8">Secure payment via Razorpay</p>
 
-            <CashfreeCheckout
+            <RazorpayCheckout
               bookingId={bookingId}
-              orderId={sessionStorage.getItem('pendingOrderId') || ''}
-              paymentSessionId={sessionStorage.getItem('paymentSessionId') || ''}
+              razorpayOrderId={sessionStorage.getItem('razorpayOrderId') || ''}
+              razorpayKeyId={sessionStorage.getItem('razorpayKeyId') || ''}
               amount={displayPriceCents}
               currency={displayCurrency}
-              onSuccess={() => {
+              onSuccess={async () => {
                 // Clear session storage
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('pendingOrderId')
-                sessionStorage.removeItem('paymentSessionId')
-                // Proceed to booking confirmation and Google Meet
-                proceedToBookingCreation()
+                sessionStorage.removeItem('razorpayOrderId')
+                sessionStorage.removeItem('razorpayKeyId')
+                
+                // Fetch the completed booking
+                try {
+                  const { data: sessionData } = await supabase.auth.getSession()
+                  const token = sessionData?.session?.access_token
+                  if (!token) throw new Error('Session expired')
+
+                  const res = await fetch(`${API_BASE}/api/book-finalize`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ bookingId }),
+                  })
+
+                  const json = await res.json().catch(() => ({}))
+                  if (!res.ok) throw new Error(json.error || 'Failed to finalize booking')
+
+                  const result = json as { booking: BookingResult }
+                  setBooking(result.booking)
+                  setStep('done')
+                } catch (err) {
+                  toast((err as Error).message || 'Failed to finalize booking', 'error')
+                  setStep('confirm')
+                }
               }}
               onError={(error: string) => {
                 toast(error, 'error')
@@ -318,15 +303,14 @@ export default function BookingFlow() {
               onCancel={() => {
                 setStep('confirm')
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('pendingOrderId')
-                sessionStorage.removeItem('paymentSessionId')
+                sessionStorage.removeItem('razorpayOrderId')
+                sessionStorage.removeItem('razorpayKeyId')
               }}
               onRetry={() => {
-                // Retry: clear state and go back to confirm to re-initialize payment
                 setStep('confirm')
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('pendingOrderId')
-                sessionStorage.removeItem('paymentSessionId')
+                sessionStorage.removeItem('razorpayOrderId')
+                sessionStorage.removeItem('razorpayKeyId')
               }}
             />
 
