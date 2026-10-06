@@ -206,29 +206,64 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       console.log('[CASHFREE] init-paid-booking for mentor:', mentorSlug)
 
-      // Resolve mentor
+      // STEP 1: Resolve mentor from public.mentors (ONLY columns that exist)
       const { data: mentorRow, error: mentorErr } = await db
         .from('mentors')
-        .select('id, name, slug, services, email')
+        .select('id, user_id, name, slug, services, status')
         .eq('slug', mentorSlug)
         .eq('status', 'published')
         .maybeSingle()
 
-      if (mentorErr || !mentorRow) {
-        return res.status(404).json({ error: 'Mentor not found.' })
+      if (mentorErr) {
+        console.error('[CASHFREE] Mentor query error:', mentorErr.message)
+        return res.status(500).json({ error: 'Unable to load mentor information. Please try again.' })
       }
 
-      // Resolve service
+      if (!mentorRow) {
+        return res.status(404).json({ error: 'This mentor is not currently available.' })
+      }
+
+      // STEP 2: Get mentor email from public.profiles using user_id
+      const { data: mentorProfile, error: profileErr } = await db
+        .from('profiles')
+        .select('email, full_name')
+        .eq('id', mentorRow.user_id)
+        .maybeSingle()
+
+      if (profileErr) {
+        console.error('[CASHFREE] Mentor profile query error:', profileErr.message)
+        return res.status(500).json({ error: 'Unable to load mentor information. Please try again.' })
+      }
+
+      const mentorEmail = mentorProfile?.email || 'mentor@helpamart.com'
+      const mentorName = mentorProfile?.full_name || mentorRow.name
+
+      // STEP 3: Get authenticated user's profile for student email and name
+      const { data: userProfile, error: userProfileErr } = await db
+        .from('profiles')
+        .select('email, full_name')
+        .eq('id', userId)
+        .maybeSingle()
+
+      if (userProfileErr) {
+        console.error('[CASHFREE] User profile query error:', userProfileErr.message)
+        return res.status(500).json({ error: 'Unable to load your profile. Please try again.' })
+      }
+
+      const studentEmail = userProfile?.email || 'user@helpamart.com'
+      const studentName = userProfile?.full_name || 'User'
+
+      // STEP 4: Resolve service
       const services = Array.isArray(mentorRow.services) ? mentorRow.services : []
       const service = serviceId
         ? services.find((s: any) => s.id === serviceId || s.title === serviceId) ?? services[0]
         : services[0]
 
       if (!service) {
-        return res.status(400).json({ error: 'Service not found.' })
+        return res.status(400).json({ error: 'This session type is no longer available.' })
       }
 
-      // Calculate time
+      // STEP 5: Calculate time
       const start = new Date(startAtStr)
       const durationMin = service.durationMinutes || 30
       const end = new Date(start.getTime() + durationMin * 60 * 1000)
@@ -237,7 +272,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ error: 'Invalid start time.' })
       }
 
-      // Verify user is NOT first session (returning user)
+      // STEP 6: Verify user is NOT first session (returning user)
       const { count: prevBookings } = await db
         .from('bookings')
         .select('id', { count: 'exact', head: true })
@@ -250,7 +285,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ error: 'First session is free. Use regular booking flow.' })
       }
 
-      // Create provisional booking (UNPAID STATE)
+      // STEP 7: Create provisional booking (UNPAID STATE)
+      // Use status='pending' (allowed by constraint), payment_status='pending' to track payment state
       const provisionalBookingId = crypto.randomUUID()
       const now = new Date().toISOString()
 
@@ -263,14 +299,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         start_at: start.toISOString(),
         end_at: end.toISOString(),
         timezone,
-        status: 'pending_payment', // Special status: awaiting payment
-        payment_status: 'pending',
+        status: 'pending', // Use 'pending' (allowed by constraint), not 'pending_payment'
+        payment_status: 'pending', // Tracks actual payment state
         price_cents: 9900, // ₹99
         currency: 'INR',
         payment_provider: 'cashfree',
         meet_link: null,
-        mentor_email: mentorRow.email || null,
-        student_email: null, // Will be set after payment
+        mentor_email: mentorEmail,
+        student_email: studentEmail,
         created_at: now,
         updated_at: now,
       })
@@ -280,17 +316,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(500).json({ error: 'Failed to create booking. Please try again.' })
       }
 
-      console.log('[CASHFREE] Provisional booking created:', provisionalBookingId)
+      console.log('[CASHFREE] Provisional booking created:', provisionalBookingId, 'for user:', userId, 'mentor:', mentorName)
 
-      // Create Cashfree order
+      // STEP 8: Create Cashfree order
       try {
         const { payment_session_id, order_id } = await createPaymentOrder({
           bookingId: provisionalBookingId,
           userId,
           amount: 9900,
           currency: 'INR',
-          customerEmail: 'user@helpamart.com',
-          customerName: 'HELPAMART User',
+          customerEmail: studentEmail,
+          customerName: studentName,
         })
 
         // Link Cashfree order to provisional booking
@@ -315,8 +351,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })
       } catch (err: any) {
         // Rollback provisional booking on Cashfree failure
+        console.error('[CASHFREE] Cashfree order creation failed, rolling back booking:', err.message)
         await db.from('bookings').delete().eq('id', provisionalBookingId)
-        return res.status(503).json({ error: err.message || 'Could not create payment order.' })
+        return res.status(503).json({ error: err.message || 'Unable to start secure payment. Please try again.' })
       }
     }
 
