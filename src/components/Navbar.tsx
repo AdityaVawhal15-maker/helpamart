@@ -3,6 +3,7 @@ import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, X, Menu, ChevronDown, ArrowRight } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
+import { NotificationBell } from './ui/NotificationBell'
 import clsx from 'clsx'
 
 const NAV_LINKS = [
@@ -188,6 +189,9 @@ export default function Navbar({ transparent = false }: Props) {
                 ⌘K
               </kbd>
             </button>
+
+            {/* Notification bell */}
+            {user && <NotificationBell />}
 
             {user ? (
               /* User menu */

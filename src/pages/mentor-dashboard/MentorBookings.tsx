@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Calendar, Clock, Video } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
+import { supabase } from '@/lib/supabase'
 import { getMentorBookings, type MentorBooking } from '@/lib/mentor'
 
 const STATUS_STYLES: Record<string, string> = {
@@ -30,18 +31,63 @@ export default function MentorBookings() {
       return
     }
 
-    setLoading(true)
-    setError(null)
-    getMentorBookings(mentor.id)
-      .then((data) => {
-        setBookings(data)
-      })
-      .catch((err) => {
+    let cancelled = false
+    const mentorId = mentor.id
+
+    async function loadBookings() {
+      setLoading(true)
+      setError(null)
+      try {
+        const data = await getMentorBookings(mentorId)
+        if (!cancelled) {
+          setBookings(data)
+        }
+      } catch (err) {
         console.error('Failed to load mentor bookings:', err)
-        setError('Failed to load bookings. Please try again.')
-        setBookings([])
+        if (!cancelled) {
+          setError('Failed to load bookings. Please try again.')
+          setBookings([])
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    loadBookings()
+
+    // Subscribe to realtime booking changes for this mentor
+    console.log('[MentorBookings] Subscribing to realtime for mentor:', mentorId)
+    const channel = supabase
+      .channel(`bookings:mentor_id=eq.${mentorId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Listen to INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'bookings',
+          filter: `mentor_id=eq.${mentorId}`,
+        },
+        async (payload: any) => {
+          console.log('[MentorBookings] Realtime event:', payload.eventType, 'booking:', payload.new?.id || payload.old?.id)
+          // Reload all bookings on any change to keep state consistent
+          try {
+            const updated = await getMentorBookings(mentorId)
+            if (!cancelled) {
+              setBookings(updated)
+            }
+          } catch (err) {
+            console.error('[MentorBookings] Realtime reload error:', err)
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log('[MentorBookings] Realtime subscription status:', status)
       })
-      .finally(() => setLoading(false))
+
+    return () => {
+      cancelled = true
+      channel.unsubscribe()
+    }
   }, [user, mentor, authLoading, navigate])
 
   if (authLoading) {

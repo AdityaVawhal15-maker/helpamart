@@ -245,7 +245,20 @@ async function sendBookingEmails(opts: {
   paymentStatus: 'free' | 'paid'
 }) {
   const transport = getTransporter()
-  const from = process.env.SMTP_FROM || 'HELPAMART <guidance@helpamart.com>'
+  if (!transport) {
+    console.warn('[BOOK] SMTP transporter not configured. Email dispatch skipped.')
+    console.warn('[BOOK] Required env vars: SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT')
+    return
+  }
+
+  const from = process.env.SMTP_FROM || 'HELPAMART <hello@helpamart.com>'
+  
+  // Validate Meet URL
+  if (!opts.meetUrl || !opts.meetUrl.startsWith('https://meet.google.com/')) {
+    console.error('[BOOK] Email send error: Invalid meet URL provided:', opts.meetUrl)
+    return
+  }
+
   const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
   const endTime = fmt(opts.endAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
@@ -253,7 +266,7 @@ async function sendBookingEmails(opts: {
     ? 'Free (first HELPAMART session)'
     : opts.paymentStatus === 'paid'
     ? `₹${Math.round(opts.priceCents / 100)}`
-    : `₹${Math.round(opts.priceCents / 100)} (payment pending)'`
+    : `₹${Math.round(opts.priceCents / 100)} (payment pending)`
 
   const meetBlock = `
     <div style="margin:24px 0;padding:20px;background:#f4efe6;border-radius:12px;border-left:4px solid #B77A22;">
@@ -296,30 +309,33 @@ async function sendBookingEmails(opts: {
   ]
 
   // Mentor confirmation email
-  if (opts.mentorEmail && transport) {
+  if (opts.mentorEmail) {
     const html = wrap(
       'New Session Booked',
       `Hello <strong>${opts.mentorName}</strong>, a new mentoring session has been booked with you.`,
       `<div style="background:#FDFBF7;border:1px solid #e8e3d9;border-radius:10px;padding:18px;margin:16px 0;">
-        ${table([...detailRows, ['Student', `${opts.menteeName} (${opts.menteeEmail || '—'})`]])}
+        ${table([...detailRows, ['Student', `${opts.menteeName} (${opts.menteeEmail || 'N/A'})`]])}
        </div>
        ${meetBlock}
        <p style="font-size:14px;">View your sessions in your <a href="https://helpamart.com/mentor-dashboard/bookings" style="color:#B77A22;font-weight:600;">Mentor Dashboard →</a></p>`,
     )
     try {
-      await transport.sendMail({
+      const info = await transport.sendMail({
         from,
         to: opts.mentorEmail,
         subject: `New HELPAMART session scheduled — ${opts.serviceTitle}`,
         html,
       })
-    } catch (e) {
-      console.error('[BOOK] Mentor email dispatch error:', e)
+      console.log('[BOOK] MENTOR EMAIL SENT:', opts.mentorEmail.slice(0, 3) + '***', '| messageId:', info.messageId)
+    } catch (e: any) {
+      console.error('[BOOK] MENTOR EMAIL FAILED:', opts.mentorEmail, '| error:', e?.message || e)
     }
+  } else {
+    console.warn('[BOOK] MENTOR EMAIL SKIPPED: no email found for mentor_id', opts.mentorName)
   }
 
   // Mentee confirmation email
-  if (opts.menteeEmail && transport) {
+  if (opts.menteeEmail) {
     const html = wrap(
       'Session Confirmed',
       `Hello <strong>${opts.menteeName}</strong>, your mentoring session with <strong>${opts.mentorName}</strong> is confirmed.`,
@@ -330,15 +346,18 @@ async function sendBookingEmails(opts: {
        <p style="font-size:14px;">View your sessions in <a href="https://helpamart.com/dashboard/bookings" style="color:#B77A22;font-weight:600;">My Bookings →</a></p>`,
     )
     try {
-      await transport.sendMail({
+      const info = await transport.sendMail({
         from,
         to: opts.menteeEmail,
         subject: `HELPAMART session confirmed — ${opts.serviceTitle} with ${opts.mentorName}`,
         html,
       })
-    } catch (e) {
-      console.error('[BOOK] Mentee email dispatch error:', e)
+      console.log('[BOOK] MENTEE EMAIL SENT:', opts.menteeEmail.slice(0, 3) + '***', '| messageId:', info.messageId)
+    } catch (e: any) {
+      console.error('[BOOK] MENTEE EMAIL FAILED:', opts.menteeEmail, '| error:', e?.message || e)
     }
+  } else {
+    console.warn('[BOOK] MENTEE EMAIL SKIPPED: no email found for mentee_id (userId)', opts.menteeName)
   }
 }
 
@@ -479,15 +498,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[BOOK] clash check passed')
 
     // Fetch participant profile info for notifications & emails
-    const [{ data: mentorUser }, { data: menteeUser }] = await Promise.all([
+    // CRITICAL: Email resolution must be server-authoritative from profiles table
+    const [{ data: mentorUser, error: mentorProfileErr }, { data: menteeUser, error: menteeProfileErr }] = await Promise.all([
       db.from('profiles').select('email, full_name').eq('id', mentorRow.user_id).maybeSingle(),
       db.from('profiles').select('email, full_name').eq('id', userId).maybeSingle(),
     ])
 
+    if (mentorProfileErr) {
+      console.error('[BOOK] mentor profile lookup FAILED:', mentorProfileErr.message, '| mentor.user_id:', mentorRow.user_id)
+    }
+    if (menteeProfileErr) {
+      console.error('[BOOK] mentee profile lookup FAILED:', menteeProfileErr.message, '| mentee_id:', userId)
+    }
+
     const mentorEmail = mentorUser?.email ?? null
     const menteeEmail = menteeUser?.email ?? null
+    const mentorName = mentorRow.name || 'Mentor'
     const menteeName = menteeUser?.full_name || 'Student'
-    console.log('[BOOK] profiles fetched: mentor email present=', !!mentorEmail, '| mentee email present=', !!menteeEmail)
+
+    console.log('[BOOK] profiles resolved:')
+    console.log('  - mentor_id:', mentorRow.id, '| user_id:', mentorRow.user_id, '| email:', mentorEmail ? `${mentorEmail.slice(0, 3)}***${mentorEmail.slice(-6)}` : 'MISSING', '| name:', mentorName)
+    console.log('  - mentee_id:', userId, '| email:', menteeEmail ? `${menteeEmail.slice(0, 3)}***${menteeEmail.slice(-6)}` : 'MISSING', '| name:', menteeName)
 
     // 6. Check central Google Meet credentials FIRST before finalizing
     const meetCreds = await getCentralMeetCredentials(db)
@@ -619,7 +650,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 11. Send confirmation emails to BOTH mentee and mentor (Hostinger SMTP)
     sendBookingEmails({
       bookingId,
-      mentorName: mentorRow.name,
+      mentorName: mentorName,
       mentorEmail,
       menteeName,
       menteeEmail,
@@ -632,31 +663,61 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       meetUrl: realMeetUrl,
       isFirstSession: isFirstSessionOnHelpamart,
       paymentStatus: finalPriceCents === 0 ? 'free' : 'paid',
-    }).catch(e => console.error('[BOOK] Email dispatch error:', e))
-    console.log('[BOOK] sending emails (async, non-blocking)')
+    }).catch(e => console.error('[BOOK] sendBookingEmails() error:', e))
+    console.log('[BOOK] email dispatch initiated (async, non-blocking)')
 
     // 12. Create in-app notifications for BOTH mentee and mentor
+    // CRITICAL: Notifications must include:
+    //   - EXACT meet_link from bookings.meet_link (single source of truth)
+    //   - Full booking details (date, time, service, amount)
+    //   - Recipient as user_id (mentor or mentee)
     try {
+      if (!realMeetUrl || !realMeetUrl.startsWith('https://meet.google.com/')) {
+        throw new Error(`Invalid meet URL: ${realMeetUrl}`)
+      }
+
+      const dateStr = fmt(start.toISOString(), timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+      const startTime = fmt(start.toISOString(), timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
+      const amountDisplay = finalPriceCents === 0
+        ? 'Complimentary (first HELPAMART session)'
+        : `₹${Math.round(finalPriceCents / 100)}`
+
+      const menteeNotificationMessage = `Your session with ${mentorRow.name} is confirmed for ${dateStr} at ${startTime}. Service: ${service.title}. Amount: ${amountDisplay}. Click to join the Google Meet.`
+      const mentorNotificationMessage = `New session booked with ${menteeName}. ${dateStr} at ${startTime}. Service: ${service.title}. Amount: ${amountDisplay}. Click to join the Google Meet.`
+
       const notifications = [
         {
           user_id: userId,
           title: 'Session Confirmed',
-          message: `Your HELPAMART session is confirmed. Join your session here: ${realMeetUrl}`,
+          message: menteeNotificationMessage,
           link: realMeetUrl,
+          read: false,
+          created_at: now,
+          updated_at: now,
         },
       ]
+
+      // Add mentor notification only if mentor account exists
       if (mentorRow.user_id) {
         notifications.push({
           user_id: mentorRow.user_id,
-          title: 'New Confirmed Session',
-          message: `You have a new confirmed HELPAMART session. Join here: ${realMeetUrl}`,
+          title: 'New Session Booked',
+          message: mentorNotificationMessage,
           link: realMeetUrl,
+          read: false,
+          created_at: now,
+          updated_at: now,
         })
       }
-      await db.from('notifications').insert(notifications)
-      console.log('[BOOK] notifications inserted')
+
+      const { error: notifInsertErr } = await db.from('notifications').insert(notifications)
+      if (notifInsertErr) {
+        console.error('[BOOK] notification INSERT error:', notifInsertErr.message, '| code:', notifInsertErr.code)
+      } else {
+        console.log('[BOOK] notifications inserted successfully:', notifications.length, 'notifications')
+      }
     } catch (notifErr: any) {
-      console.warn('[BOOK] In-app notification creation error (table may be pending migration):', notifErr?.message)
+      console.error('[BOOK] notification creation error:', notifErr?.message || notifErr)
     }
 
     // 13. Return HTTP 200 with booking and REAL Meet URL
