@@ -15,9 +15,8 @@ type State = {
 
 type BookingResult = {
   id: string
-  meetLink: string | null
-  calendarStatus: string | null
-  calendarHtmlLink: string | null
+  meetUrl?: string
+  meetLink: string
   status: string
   priceCents: number
   currency: string
@@ -147,9 +146,12 @@ export default function BookingFlow() {
       }
 
       const result = json as { booking: BookingResult }
-      if (!result?.booking?.id) throw new Error('Unexpected response from server.')
+      const meetUrl = result?.booking?.meetUrl || result?.booking?.meetLink
+      if (!result?.booking?.id || !meetUrl) {
+        throw new Error('Google Meet room could not be created. Please try again.')
+      }
 
-      setBooking(result.booking)
+      setBooking({ ...result.booking, meetLink: meetUrl, meetUrl })
       setStep('done')
     } catch (err: unknown) {
       const msg = (err as Error).message || 'Booking failed. Please try again.'
@@ -162,7 +164,7 @@ export default function BookingFlow() {
 
   // ── Success screen ────────────────────────────────────────────────────────
   if (step === 'done' && booking) {
-    const calendarWebUrl = booking.calendarHtmlLink || 'https://calendar.google.com'
+    const meetUrl = booking.meetUrl || booking.meetLink
 
     return (
       <div className="min-h-screen bg-ivory flex items-center justify-center p-6">
@@ -254,43 +256,31 @@ export default function BookingFlow() {
               transition={{ delay: 0.6, duration: 0.5 }}
               className="space-y-3"
             >
-              {/* Join Google Meet — real URL required, never empty placeholder */}
+              {/* JOIN GOOGLE MEET — real URL returned from Google Meet REST API */}
               <a
-                href={booking.meetLink || '#'}
-                target={booking.meetLink ? '_blank' : undefined}
-                rel={booking.meetLink ? 'noopener noreferrer' : undefined}
-                onClick={(e) => {
-                  if (!booking.meetLink) {
-                    e.preventDefault()
-                    toast('Google Meet link is being prepared. Please refresh in a moment.', 'info')
-                  }
-                }}
-                className={`flex items-center justify-center gap-2 w-full py-3.5 rounded-xl font-semibold transition-all ${
-                  booking.meetLink
-                    ? 'bg-navy text-white hover:bg-navy-mid hover:shadow-[0_6px_20px_rgba(7,26,53,0.2)] cursor-pointer'
-                    : 'bg-ivory-dark text-navy/50 cursor-not-allowed opacity-60'
-                }`}
-              >
-                <VideoIcon className="h-4 w-4" />
-                {booking.meetLink ? 'Join Google Meet' : 'Preparing Google Meet…'}
-              </a>
-
-              {/* Open Google Calendar */}
-              <a
-                href={calendarWebUrl}
+                href={meetUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 hover:bg-ivory-light transition-colors"
+                className="flex items-center justify-center gap-2 w-full py-4 bg-navy text-white rounded-xl font-semibold hover:bg-navy-mid hover:shadow-[0_6px_20px_rgba(7,26,53,0.2)] transition-all cursor-pointer text-sm"
               >
-                <Calendar className="h-4 w-4 text-gold" />
-                Open Google Calendar
+                <VideoIcon className="h-4 w-4" />
+                JOIN GOOGLE MEET
               </a>
 
+              {/* VIEW MY BOOKINGS */}
               <button
                 onClick={() => navigate('/dashboard/bookings')}
-                className="w-full py-3 border border-grey-soft text-navy rounded-xl font-medium text-sm hover:border-gold/40 transition-colors"
+                className="w-full py-3.5 border border-grey-soft text-navy rounded-xl font-semibold text-sm hover:border-gold/40 hover:bg-ivory-light transition-colors"
               >
-                View My Bookings
+                VIEW MY BOOKINGS
+              </button>
+
+              {/* OPEN / VIEW SESSION DETAILS */}
+              <button
+                onClick={() => navigate('/dashboard/bookings')}
+                className="w-full py-2.5 text-grey hover:text-navy text-xs font-semibold tracking-wider uppercase transition-colors"
+              >
+                VIEW SESSION DETAILS
               </button>
             </motion.div>
           </div>
@@ -355,8 +345,8 @@ export default function BookingFlow() {
 
           <div className="bg-gold/8 border border-gold/20 rounded-xl p-4 mb-6">
             <p className="text-xs text-navy/70 leading-relaxed">
-              A Google Calendar event and Google Meet conference have been created.
-              You will receive confirmation emails with all session details.
+              A Google Meet link will be generated automatically for your session.
+              Confirmation emails with the meeting link will be sent to both you and your mentor.
             </p>
           </div>
 

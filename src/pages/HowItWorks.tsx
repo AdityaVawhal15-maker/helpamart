@@ -17,7 +17,7 @@ const STEPS = [
     icon: <Calendar className="h-6 w-6" />,
     title: 'Book',
     headline: 'Choose a time that works.',
-    body: 'Pick from their available slots. Confirm instantly. Get a calendar invite and a Google Meet link — everything taken care of.',
+    body: 'Pick from their available slots. Confirm instantly. Get a real Google Meet link immediately — everything taken care of.',
     color: 'bg-navy/5 border-navy/10',
     iconColor: 'bg-navy/10 text-navy',
   },
@@ -52,7 +52,7 @@ const FAQS = [
   },
   {
     q: 'What happens after I book?',
-    a: 'You receive an instant confirmation, a calendar event, and a Google Meet link (if the mentor uses video). The mentor also gets notified.',
+    a: 'You receive an instant confirmation and a real Google Meet link. The mentor also gets notified immediately.',
   },
   {
     q: 'Can I cancel a booking?',

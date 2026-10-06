@@ -6,21 +6,27 @@
  *   1. Authenticate via Supabase JWT
  *   2. Validate mentor / service / slot
  *   3. Compute first-session-free price from persistent history
- *   4. Double-booking check + atomic insert
- *   5. Google Calendar event + Google Meet conference (central HELPAMART account)
- *   6. Persist calendar_event_id + meet_link back to booking
- *   7. Send confirmation emails (mentor + mentee)
+ *   4. Double-booking check
+ *   5. Create booking in Supabase
+ *   6. Fetch central HELPAMART Google Meet credentials (server-side only)
+ *   7. Exchange refresh token for fresh access token
+ *   8. Call Google Meet REST API (POST https://meet.googleapis.com/v2/spaces)
+ *   9. Extract & validate the REAL Google Meet URI
+ *  10. Persist real meet_link (+ meet_space_name) to booking
+ *  11. Send confirmation emails to mentee and mentor (with real Meet link)
+ *  12. Create in-app notifications for mentee and mentor (with real Meet link)
+ *  13. Return HTTP 200 with booking + real meetUrl
  *
- * Secrets (never exposed to the browser):
- *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
- *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
- *   HELPAMART_GOOGLE_REFRESH_TOKEN  — refresh token for the central HELPAMART Google account
- *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+ * CRITICAL RULE: NO SILENT FAILURES.
+ * If Google Meet creation fails, the booking is deleted/rolled back,
+ * HTTP 503 is returned, and NO booking is ever confirmed without a real Meet URL.
+ *
+ * NO GOOGLE CALENDAR DEPENDENCY:
+ * No Calendar events, no conferenceData, no calendar scope, no mentor calendar connect.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
-import { google } from 'googleapis'
 import nodemailer from 'nodemailer'
 
 // ─── Supabase admin client (service-role — server only) ──────────────────────
@@ -48,16 +54,15 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
   return user.id
 }
 
-// ─── Central HELPAMART Google Calendar client ─────────────────────────────────
-// One dedicated HELPAMART Google account is the event organizer for ALL bookings.
-// Mentor = attendee, Mentee = attendee.
-//
-// Token resolution order (both are server-side only — never in the browser):
-//   1. google_service_connections table (written by /api/admin-calendar-callback)
-//   2. HELPAMART_GOOGLE_REFRESH_TOKEN env var (manual fallback / override)
-async function getCentralCalendarClient(
-  db: ReturnType<typeof adminSupabase>,
-): Promise<InstanceType<typeof google.auth.OAuth2> | null> {
+// ─── Central HELPAMART Google Meet credentials resolver ───────────────────────
+// Resolves refresh token server-side only:
+//   1. google_service_connections table (written by /api/admin-meet-callback)
+//   2. GOOGLE_MEET_REFRESH_TOKEN or HELPAMART_GOOGLE_REFRESH_TOKEN env vars
+async function getCentralMeetCredentials(db: ReturnType<typeof adminSupabase>): Promise<{
+  clientId: string
+  clientSecret: string
+  refreshToken: string
+} | null> {
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
 
@@ -67,180 +72,125 @@ async function getCentralCalendarClient(
   }
 
   let refreshToken: string | null = null
-  let source: string = 'none'
 
-  // 1. Try DB (authoritative — set by /api/admin-calendar-callback)
+  // 1. Try DB (authoritative)
   try {
     const { data: conn, error: dbErr } = await db
       .from('google_service_connections')
       .select('refresh_token, status, account_email')
-      .eq('key', 'helpamart_organizer')
+      .in('key', ['helpamart_meet', 'helpamart_organizer'])
+      .eq('status', 'connected')
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (dbErr) {
       console.warn(`[BOOK] google_service_connections query error: ${dbErr.message}`)
     }
-    
-    if (conn) {
-      console.log(`[BOOK] Found central connection in DB: status=${conn.status}, account_email=${conn.account_email || 'null'}`)
-      if (conn.status === 'connected' && conn.refresh_token) {
-        refreshToken = conn.refresh_token
-        source = 'db'
-        console.log(`[BOOK] central_auth_source=db`)
-      } else {
-        console.warn(`[BOOK] DB connection exists but invalid: status=${conn.status}, token_present=${!!conn.refresh_token}`)
-      }
-    } else {
-      console.warn(`[BOOK] No central connection found in google_service_connections table`)
+
+    if (conn?.status === 'connected' && conn.refresh_token) {
+      refreshToken = conn.refresh_token
+      console.log(`[BOOK] Central Google Meet token resolved from DB (account: ${conn.account_email || 'unknown'})`)
     }
   } catch (e: any) {
-    console.error(`[BOOK] google_service_connections query failed: ${e?.message}`)
+    console.error(`[BOOK] google_service_connections lookup failed: ${e?.message}`)
   }
 
-  // 2. Env var fallback (manual override / legacy)
+  // 2. Env var fallback
   if (!refreshToken) {
-    const envToken = process.env.HELPAMART_GOOGLE_REFRESH_TOKEN
+    const envToken = process.env.GOOGLE_MEET_REFRESH_TOKEN || process.env.HELPAMART_GOOGLE_REFRESH_TOKEN
     if (envToken) {
       refreshToken = envToken
-      source = 'env_var'
-      console.log(`[BOOK] central_auth_source=env_var`)
+      console.log(`[BOOK] Central Google Meet token resolved from env_var`)
     }
   }
 
   if (!refreshToken) {
-    console.error(`[BOOK] CRITICAL: No central Google refresh token found (DB or env). Run /api/admin-calendar-connect to authorize.`)
+    console.error(`[BOOK] CRITICAL: No Google Meet refresh token found (DB or env). Visit /admin/meet to authorize.`)
     return null
   }
 
-  try {
-    const oauth2 = new google.auth.OAuth2(clientId, clientSecret)
-    oauth2.setCredentials({ refresh_token: refreshToken })
-    console.log(`[BOOK] OAuth2 client created successfully from source=${source}`)
-    return oauth2
-  } catch (e: any) {
-    console.error(`[BOOK] Failed to create OAuth2 client: ${e?.message}`)
-    return null
+  return { clientId, clientSecret, refreshToken }
+}
+
+// ─── Generate Google access token from refresh token ──────────────────────────
+async function getGoogleAccessToken(creds: {
+  clientId: string
+  clientSecret: string
+  refreshToken: string
+}): Promise<string> {
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+      refresh_token: creds.refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  })
+
+  if (!tokenRes.ok) {
+    const errText = await tokenRes.text()
+    console.error('[BOOK] Google OAuth token refresh failed:', tokenRes.status, errText)
+    throw new Error(`Google token refresh failed (${tokenRes.status})`)
+  }
+
+  const tokenData = (await tokenRes.json()) as { access_token?: string }
+  if (!tokenData.access_token) {
+    throw new Error('Google token refresh returned no access_token.')
+  }
+
+  return tokenData.access_token
+}
+
+// ─── Create real Google Meet space via Google Meet REST API v2 ────────────────
+// Direct call to POST https://meet.googleapis.com/v2/spaces
+// Returns the real meetingUri generated by Google
+async function createGoogleMeetSpace(accessToken: string): Promise<{
+  meetingUri: string
+  spaceName: string
+  meetingCode: string
+}> {
+  console.log('[BOOK] Calling Google Meet REST API: POST https://meet.googleapis.com/v2/spaces')
+
+  const meetRes = await fetch('https://meet.googleapis.com/v2/spaces', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+
+  if (!meetRes.ok) {
+    const errText = await meetRes.text()
+    console.error('[BOOK] Google Meet API spaces.create failed:', meetRes.status, errText)
+    throw new Error(`Google Meet API failed with status ${meetRes.status}`)
+  }
+
+  const meetData = (await meetRes.json()) as {
+    name?: string
+    meetingUri?: string
+    meetingCode?: string
+  }
+
+  const meetingUri = meetData.meetingUri
+  if (!meetingUri || typeof meetingUri !== 'string' || !meetingUri.startsWith('https://meet.google.com/')) {
+    console.error('[BOOK] Google Meet API returned unexpected body:', JSON.stringify(meetData))
+    throw new Error('Google Meet API did not return a valid meetingUri.')
+  }
+
+  console.log(`[BOOK] Google Meet space created successfully: ${meetingUri} (space: ${meetData.name || 'none'})`)
+
+  return {
+    meetingUri,
+    spaceName: meetData.name || '',
+    meetingCode: meetData.meetingCode || '',
   }
 }
 
-// ─── Create Google Calendar event + Meet conference ───────────────────────────
-// Uses the central HELPAMART Google account as organizer.
-// Mentor + mentee are added as attendees.
-async function createCalendarEvent(opts: {
-  auth: InstanceType<typeof google.auth.OAuth2>
-  mentorName: string
-  menteeEmail: string | null
-  mentorEmail: string | null
-  startAt: string
-  endAt: string
-  timezone: string
-  bookingId: string
-  serviceTitle: string
-}): Promise<{ ok: boolean; eventId?: string | null; meetLink?: string | null; htmlLink?: string | null; reason?: string }> {
-  if (!opts.auth) return { ok: false, reason: 'no_calendar_auth' }
-  try {
-    const calendar = google.calendar({ version: 'v3', auth: opts.auth })
-
-    const attendees: { email: string }[] = []
-    if (opts.menteeEmail) attendees.push({ email: opts.menteeEmail })
-    if (opts.mentorEmail) attendees.push({ email: opts.mentorEmail })
-
-    const res = await calendar.events.insert({
-      calendarId: 'primary',
-      conferenceDataVersion: 1,
-      sendUpdates: 'all', // sends Calendar invitations to attendees
-      requestBody: {
-        summary: `HELPAMART Mentorship — ${opts.mentorName}`,
-        description: [
-          `HELPAMART mentoring session: ${opts.serviceTitle}`,
-          `Booking ID: ${opts.bookingId}`,
-          `Manage at: https://helpamart.com/dashboard/bookings`,
-        ].join('\n'),
-        start: { dateTime: opts.startAt, timeZone: opts.timezone },
-        end: { dateTime: opts.endAt, timeZone: opts.timezone },
-        attendees,
-        reminders: {
-          useDefault: false,
-          overrides: [
-            { method: 'popup', minutes: 60 },
-            { method: 'popup', minutes: 30 },
-            { method: 'email', minutes: 60 },
-          ],
-        },
-        conferenceData: {
-          createRequest: {
-            // Deterministic requestId using booking ID — prevents duplicate Meet rooms on retry
-            requestId: `helpamart-${opts.bookingId}`,
-            conferenceSolutionKey: { type: 'hangoutsMeet' },
-          },
-        },
-      },
-    })
-
-    const eventData = res.data
-    const htmlLink = eventData.htmlLink ?? null
-
-    // ── Extract Meet URL with proper pending-state polling ────────────────────
-    function extractMeetLink(ev: typeof eventData): string | null {
-      return (
-        ev.hangoutLink ||
-        ev.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri ||
-        null
-      )
-    }
-
-    function conferenceStatus(ev: typeof eventData): string {
-      return ev.conferenceData?.createRequest?.status?.statusCode ?? 'unknown'
-    }
-
-    let meetLink: string | null = extractMeetLink(eventData)
-    let attempts = 0
-    const maxAttempts = 8         // up to 20 s total (8 × 2.5 s) — Google Meet often takes 5–15 s
-    const pollDelayMs = 2500
-    let latestEventData = eventData
-
-    while (!meetLink && attempts < maxAttempts && latestEventData.id) {
-      const status = conferenceStatus(latestEventData)
-      if (status === 'failure') {
-        console.log(`[BOOK] Conference status=failure at start of loop, stopping polling`)
-        break
-      }
-      await new Promise(r => setTimeout(r, pollDelayMs))
-      attempts++
-      try {
-        const polled = await calendar.events.get({ calendarId: 'primary', eventId: latestEventData.id })
-        latestEventData = polled.data
-        meetLink = extractMeetLink(latestEventData)
-        const polledStatus = conferenceStatus(latestEventData)
-        console.log(`[BOOK] Meet poll attempt ${attempts}: status=${polledStatus}, meetLink=${meetLink ? 'present' : 'null'}`)
-        if (polledStatus === 'success' || meetLink) {
-          console.log(`[BOOK] Meet URL found or success status reached`)
-          break
-        }
-        if (polledStatus === 'failure') {
-          console.log(`[BOOK] Conference status=failure during polling, stopping`)
-          break
-        }
-      } catch (pollErr: any) {
-        console.warn(`[BOOK] Meet poll attempt ${attempts} failed: ${pollErr?.message}`)
-      }
-    }
-
-    if (!meetLink) {
-      console.warn(`[BOOK] Meet URL not obtained after ${attempts} poll(s) for event ${latestEventData.id}. Final status=${conferenceStatus(latestEventData)}`)
-    } else {
-      console.log(`[BOOK] Meet URL successfully obtained: ${meetLink}`)
-    }
-
-    return { ok: true, eventId: eventData.id, meetLink, htmlLink }
-  } catch (err: any) {
-    const errMsg = err?.message || 'calendar_error'
-    console.error('[BOOK] Google Calendar event creation failed:', errMsg)
-    return { ok: false, reason: errMsg }
-  }
-}
-
-// ─── Email helpers ────────────────────────────────────────────────────────────
+// ─── Email helpers (Hostinger SMTP) ───────────────────────────────────────────
 function getTransporter() {
   const host = process.env.SMTP_HOST
   const user = process.env.SMTP_USER
@@ -255,8 +205,11 @@ function getTransporter() {
 }
 
 function fmt(iso: string, tz: string, opts: Intl.DateTimeFormatOptions) {
-  try { return new Intl.DateTimeFormat('en-IN', { timeZone: tz, ...opts }).format(new Date(iso)) }
-  catch { return iso.slice(0, 16) }
+  try {
+    return new Intl.DateTimeFormat('en-IN', { timeZone: tz, ...opts }).format(new Date(iso))
+  } catch {
+    return iso.slice(0, 16)
+  }
 }
 
 async function sendBookingEmails(opts: {
@@ -271,7 +224,7 @@ async function sendBookingEmails(opts: {
   timezone: string
   priceCents: number
   currency: string
-  meetLink: string | null
+  meetUrl: string
 }) {
   const transport = getTransporter()
   const from = process.env.SMTP_FROM || 'HELPAMART <guidance@helpamart.com>'
@@ -280,19 +233,19 @@ async function sendBookingEmails(opts: {
   const endTime = fmt(opts.endAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
   const priceDisplay = opts.priceCents === 0 ? 'Free (first session)' : `₹${Math.round(opts.priceCents / 100)}`
 
-  const meetBlock = opts.meetLink
-    ? `<div style="margin:20px 0;padding:16px;background:#f4efe6;border-radius:10px;border-left:4px solid #B77A22;">
-        <p style="margin:0 0 8px;font-weight:600;color:#071A35;">Google Meet</p>
-        <a href="${opts.meetLink}" style="display:inline-block;padding:10px 20px;background:#071A35;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Join Google Meet</a>
-        <p style="margin:8px 0 0;font-size:12px;color:#666;word-break:break-all;">${opts.meetLink}</p>
-       </div>`
-    : `<p style="color:#888;font-style:italic;margin:16px 0;">A video meeting link will be shared prior to the session.</p>`
+  const meetBlock = `
+    <div style="margin:24px 0;padding:20px;background:#f4efe6;border-radius:12px;border-left:4px solid #B77A22;">
+      <p style="margin:0 0 8px;font-weight:700;color:#071A35;font-size:16px;">Google Meet Video Call</p>
+      <p style="margin:0 0 14px;color:#555;font-size:14px;">Your session will take place via Google Meet. Click below to join at your scheduled time:</p>
+      <a href="${opts.meetUrl}" style="display:inline-block;padding:12px 24px;background:#071A35;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Join Google Meet</a>
+      <p style="margin:12px 0 0;font-size:13px;color:#666;word-break:break-all;">Direct Link: <a href="${opts.meetUrl}" style="color:#B77A22;">${opts.meetUrl}</a></p>
+    </div>`
 
   const table = (rows: [string, string][]) => `
     <table style="width:100%;border-collapse:collapse;font-size:14px;">
       ${rows.map(([l, v]) => `<tr>
-        <td style="padding:5px 0;color:#666;width:130px;">${l}</td>
-        <td style="padding:5px 0;font-weight:600;">${v}</td>
+        <td style="padding:6px 0;color:#666;width:130px;">${l}</td>
+        <td style="padding:6px 0;font-weight:600;color:#071A35;">${v}</td>
       </tr>`).join('')}
     </table>`
 
@@ -304,10 +257,10 @@ async function sendBookingEmails(opts: {
         <h2 style="margin:0;color:#071A35;font-size:22px;">HELPAMART</h2>
         <p style="margin:3px 0 0;color:#B77A22;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${title}</p>
       </div>
-      <p>${greeting}</p>
+      <p style="font-size:15px;margin-bottom:16px;">${greeting}</p>
       ${body}
       <p style="font-size:13px;color:#888;margin-top:28px;border-top:1px solid #e8e3d9;padding-top:14px;">
-        HELPAMART — I am here for you · <a href="https://helpamart.com" style="color:#B77A22;">helpamart.com</a>
+        HELPAMART — I am here for you · <a href="https://helpamart.com" style="color:#B77A22;text-decoration:none;">helpamart.com</a>
       </p>
     </div></body></html>`
   }
@@ -320,50 +273,50 @@ async function sendBookingEmails(opts: {
     ['Booking ID', opts.bookingId],
   ]
 
-  // Mentor email
+  // Mentor confirmation email
   if (opts.mentorEmail && transport) {
     const html = wrap(
       'New Session Booked',
       `Hello <strong>${opts.mentorName}</strong>, a new mentoring session has been booked with you.`,
       `<div style="background:#FDFBF7;border:1px solid #e8e3d9;border-radius:10px;padding:18px;margin:16px 0;">
         ${table([...detailRows, ['Student', `${opts.menteeName} (${opts.menteeEmail || '—'})`]])}
-       </div>${meetBlock}
-       <p style="font-size:14px;">View your sessions: <a href="https://helpamart.com/mentor-dashboard" style="color:#B77A22;font-weight:600;">Mentor Dashboard →</a></p>`,
+       </div>
+       ${meetBlock}
+       <p style="font-size:14px;">View your sessions in your <a href="https://helpamart.com/mentor-dashboard/bookings" style="color:#B77A22;font-weight:600;">Mentor Dashboard →</a></p>`,
     )
     try {
       await transport.sendMail({
-        from, to: opts.mentorEmail,
+        from,
+        to: opts.mentorEmail,
         subject: `New HELPAMART session scheduled — ${opts.serviceTitle}`,
         html,
       })
     } catch (e) {
-      console.error('[EMAIL] Mentor notification failed:', e)
+      console.error('[BOOK] Mentor email dispatch error:', e)
     }
   }
 
-  // Mentee email
+  // Mentee confirmation email
   if (opts.menteeEmail && transport) {
     const html = wrap(
       'Session Confirmed',
       `Hello <strong>${opts.menteeName}</strong>, your mentoring session with <strong>${opts.mentorName}</strong> is confirmed.`,
       `<div style="background:#FDFBF7;border:1px solid #e8e3d9;border-radius:10px;padding:18px;margin:16px 0;">
         ${table([...detailRows, ['Mentor', opts.mentorName]])}
-       </div>${meetBlock}
-       <p style="font-size:14px;">View your bookings: <a href="https://helpamart.com/dashboard/bookings" style="color:#B77A22;font-weight:600;">My Bookings →</a></p>`,
+       </div>
+       ${meetBlock}
+       <p style="font-size:14px;">View your sessions in <a href="https://helpamart.com/dashboard/bookings" style="color:#B77A22;font-weight:600;">My Bookings →</a></p>`,
     )
     try {
       await transport.sendMail({
-        from, to: opts.menteeEmail,
+        from,
+        to: opts.menteeEmail,
         subject: `HELPAMART session confirmed — ${opts.serviceTitle} with ${opts.mentorName}`,
         html,
       })
     } catch (e) {
-      console.error('[EMAIL] Mentee confirmation failed:', e)
+      console.error('[BOOK] Mentee email dispatch error:', e)
     }
-  }
-
-  if (!transport) {
-    console.log('[EMAIL] SMTP not configured — skipping emails for booking', opts.bookingId)
   }
 }
 
@@ -376,9 +329,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end()
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed.' })
 
+  let bookingCreated = false
+  const bookingId = crypto.randomUUID()
+  let db: ReturnType<typeof adminSupabase> | null = null
+
   try {
+    // 1. Authenticate mentee
     const userId = await verifyJwt(req.headers.authorization)
-    const db = adminSupabase()
+    db = adminSupabase()
 
     const { mentorSlug, serviceId, startAt, timezone } = req.body as {
       mentorSlug?: string
@@ -391,7 +349,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'mentorSlug, startAt, and timezone are required.' })
     }
 
-    // 1. Fetch mentor (server-authoritative — never trust frontend mentor ID)
+    // 2. Validate mentor (server-authoritative)
     const { data: mentorRow, error: mentorErr } = await db
       .from('mentors')
       .select('id, user_id, name, slug, status, services, buffer_minutes, timezone')
@@ -403,7 +361,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({ error: 'This mentor is not currently available.' })
     }
 
-    // 2. Resolve service
+    // 3. Resolve service
     const services: any[] = Array.isArray(mentorRow.services) ? mentorRow.services : []
     const service = serviceId
       ? services.find((s: any) => s.id === serviceId || s.title === serviceId) ?? services[0]
@@ -421,7 +379,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Invalid start time.' })
     }
 
-    // 3. Server-side first-session price determination
+    // 4. Server-side first-session price calculation
     const { count: prevCount } = await db
       .from('bookings')
       .select('id', { count: 'exact', head: true })
@@ -433,7 +391,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const finalPriceCents = isFirstSession ? 0 : (service.priceCents ?? 9900)
     const currency = service.currency || 'INR'
 
-    // 4. Double-booking check
+    // 5. Double-booking check
     const { data: clash } = await db
       .from('bookings')
       .select('id')
@@ -447,7 +405,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(409).json({ error: 'This time slot is no longer available. Please choose another time.' })
     }
 
-    // 5. Fetch mentor and mentee emails
+    // Fetch participant profile info for notifications & emails
     const [{ data: mentorUser }, { data: menteeUser }] = await Promise.all([
       db.from('profiles').select('email, full_name').eq('id', mentorRow.user_id).maybeSingle(),
       db.from('profiles').select('email, full_name').eq('id', userId).maybeSingle(),
@@ -457,10 +415,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const menteeEmail = menteeUser?.email ?? null
     const menteeName = menteeUser?.full_name || 'Student'
 
-    // 6. Insert booking
-    const bookingId = crypto.randomUUID()
-    const now = new Date().toISOString()
+    // 6. Check central Google Meet credentials FIRST before finalizing
+    const meetCreds = await getCentralMeetCredentials(db)
+    if (!meetCreds) {
+      console.error('[BOOK] CRITICAL: Google Meet central credentials not available')
+      return res.status(503).json({
+        error: 'Google Meet is not connected on this server. Please contact support.',
+        details: 'The central HELPAMART Google account must be connected at /admin/meet.',
+      })
+    }
 
+    // 7. Insert booking (provisional)
+    const now = new Date().toISOString()
     const { error: insertErr } = await db.from('bookings').insert({
       id: bookingId,
       mentor_id: mentorRow.id,
@@ -474,9 +440,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       payment_status: finalPriceCents === 0 ? 'not_required' : 'pending',
       price_cents: finalPriceCents,
       currency,
-      meet_link: null,
-      calendar_event_id: null,
-      calendar_status: 'pending',
+      meet_link: null, // Will ONLY be set once Google Meet API responds with real URI
       mentor_email: mentorEmail,
       student_email: menteeEmail,
       created_at: now,
@@ -484,111 +448,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
 
     if (insertErr) {
-      // Duplicate submission (same bookingId) — idempotent
-      if (insertErr.code === '23505') {
-        const { data: existing } = await db.from('bookings').select('*').eq('id', bookingId).maybeSingle()
-        return res.status(200).json({
-          booking: {
-            id: bookingId,
-            meetLink: existing?.meet_link ?? null,
-            status: existing?.status ?? 'confirmed',
-            priceCents: existing?.price_cents ?? finalPriceCents,
-            currency,
-            isFirstSession,
-            startAt: start.toISOString(),
-            endAt: end.toISOString(),
-            mentorName: mentorRow.name,
-          },
-        })
-      }
       return res.status(500).json({ error: `Could not create booking: ${insertErr.message}` })
     }
+    bookingCreated = true
 
-    // 7. Google Calendar + Meet via central HELPAMART Google account
-    // CRITICAL: This is BLOCKING — booking only succeeds if Meet generation succeeds.
-    // Do not return HTTP 200 with meetLink=null.
-    let meetLink: string | null = null
-    let calendarEventId: string | null = null
-    let calendarHtmlLink: string | null = null
-    let calendarStatus = 'not_configured'
-
-    console.log(`[BOOK] Starting Calendar/Meet creation for booking ${bookingId}`)
-    
-    const calAuth = await getCentralCalendarClient(db)
-    
-    if (!calAuth) {
-      console.error(`[BOOK] CRITICAL: central_calendar_auth=null. No central Google connection found. Check google_service_connections table and env vars.`)
-      // Delete the booking since Meet is required
+    // 8. Generate Google access token server-side from refresh token
+    let accessToken: string
+    try {
+      accessToken = await getGoogleAccessToken(meetCreds)
+    } catch (tokenErr: any) {
+      console.error('[BOOK] Google access token generation failed:', tokenErr?.message)
       await db.from('bookings').delete().eq('id', bookingId)
       return res.status(503).json({
-        error: 'Google Calendar is not configured on this server. Please contact support.',
-        details: 'The central HELPAMART Google account needs authorization. Run /api/admin-calendar-connect first.',
+        error: 'Could not authorize Google Meet. Please contact support or re-connect Google Meet at /admin/meet.',
       })
     }
 
-    console.log(`[BOOK] central_calendar_auth=OK`)
-    console.log(`[BOOK] Creating Calendar event with Google Calendar API...`)
-    
-    const calResult = await createCalendarEvent({
-      auth: calAuth,
-      mentorName: mentorRow.name,
-      menteeEmail,
-      mentorEmail,
-      startAt: start.toISOString(),
-      endAt: end.toISOString(),
-      timezone,
-      bookingId,
-      serviceTitle: service.title,
-    })
-
-    if (!calResult.ok) {
-      // Calendar event creation failed — delete booking and reject
+    // 9. Call Google Meet REST API (POST https://meet.googleapis.com/v2/spaces)
+    let meetSpace: { meetingUri: string; spaceName: string; meetingCode: string }
+    try {
+      meetSpace = await createGoogleMeetSpace(accessToken)
+    } catch (meetErr: any) {
+      console.error('[BOOK] Google Meet space creation failed:', meetErr?.message)
+      // Rollback booking immediately — NEVER leave a booking without a real Meet URL
       await db.from('bookings').delete().eq('id', bookingId)
-      console.error(`[BOOK] calendar_event_creation_failed, reason=${calResult.reason}`)
       return res.status(503).json({
-        error: 'Could not create your Google Meet conference. Please try again.',
-        details: calResult.reason,
+        error: 'Could not create your Google Meet space. Please try again or contact support.',
       })
     }
 
-    // Event was created, but Meet might still be pending
-    meetLink = calResult.meetLink ?? null
-    calendarEventId = calResult.eventId ?? null
-    calendarHtmlLink = calResult.htmlLink ?? null
-    calendarStatus = meetLink ? 'created_with_meet' : 'created_pending_meet'
+    const realMeetUrl = meetSpace.meetingUri
 
-    if (!meetLink) {
-      // Event created but Meet polling timed out — try to clean up and reject
-      console.warn(`[BOOK] Meet URL not obtained after polling for event ${calendarEventId}`)
-      await db.from('bookings').delete().eq('id', bookingId)
-      return res.status(503).json({
-        error: 'Google Meet conference creation is taking longer than expected. Please try again in a moment.',
-        details: 'Calendar event was created but Meet generation timed out.',
-      })
-    }
-
-    console.log(`[BOOK] Meet generation successful: ${meetLink}`)
-
-    // Persist the final booking with real Meet URL
+    // 10. Persist real Google Meet URL to the booking
     const { error: updateErr } = await db.from('bookings').update({
-      meet_link: meetLink,
-      calendar_event_id: calendarEventId,
-      calendar_html_link: calendarHtmlLink,
-      calendar_status: calendarStatus,
+      meet_link: realMeetUrl,
+      meet_space_name: meetSpace.spaceName || null,
       updated_at: new Date().toISOString(),
     }).eq('id', bookingId)
 
     if (updateErr) {
-      console.error(`[BOOK] Failed to update booking with Meet URL: ${updateErr.message}`)
-      // Booking is already in DB but without Meet link — this is an error state
-      // but we've already created the Calendar event, so we can't easily roll back
+      console.error('[BOOK] Failed to update booking with real Meet URL:', updateErr.message)
+      // If we cannot save the Meet URL, delete the booking to prevent orphaned/unlinked state
+      await db.from('bookings').delete().eq('id', bookingId)
       return res.status(500).json({
-        error: 'Booking was created but could not be finalized. Please contact support.',
+        error: 'Booking could not be finalized. Please try again.',
       })
     }
 
-    // 8. Send confirmation emails (fire-and-forget — booking is already persisted)
-    // Both mentor and mentee receive confirmation with REAL Meet URL
+    console.log(`[BOOK] Booking ${bookingId} successfully confirmed with real Meet URL: ${realMeetUrl}`)
+
+    // 11. Send confirmation emails to BOTH mentee and mentor (Hostinger SMTP)
     sendBookingEmails({
       bookingId,
       mentorName: mentorRow.name,
@@ -601,19 +510,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       timezone,
       priceCents: finalPriceCents,
       currency,
-      meetLink, // guaranteed non-null at this point
+      meetUrl: realMeetUrl,
     }).catch(e => console.error('[BOOK] Email dispatch error:', e))
 
-    console.log(`[BOOK] Booking complete: ${bookingId}, meetLink=${meetLink}, mentee=${menteeEmail}, mentor=${mentorEmail}`)
+    // 12. Create in-app notifications for BOTH mentee and mentor
+    try {
+      const notifications = [
+        {
+          user_id: userId,
+          title: 'Session Confirmed',
+          message: `Your HELPAMART session is confirmed. Join your session here: ${realMeetUrl}`,
+          link: realMeetUrl,
+        },
+      ]
+      if (mentorRow.user_id) {
+        notifications.push({
+          user_id: mentorRow.user_id,
+          title: 'New Confirmed Session',
+          message: `You have a new confirmed HELPAMART session. Join here: ${realMeetUrl}`,
+          link: realMeetUrl,
+        })
+      }
+      await db.from('notifications').insert(notifications)
+    } catch (notifErr: any) {
+      console.warn('[BOOK] In-app notification creation error (table may be pending migration):', notifErr?.message)
+    }
 
-    // Success — guaranteed to have real Meet URL
+    // 13. Return HTTP 200 with booking and REAL Meet URL
     return res.status(200).json({
       booking: {
         id: bookingId,
-        meetLink, // guaranteed to be a real https://meet.google.com/... URL
-        calendarEventId,
-        calendarHtmlLink,
-        calendarStatus,
+        meetUrl: realMeetUrl,
+        meetLink: realMeetUrl,
         status: 'confirmed',
         priceCents: finalPriceCents,
         currency,
@@ -624,7 +552,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     })
   } catch (err: any) {
-    console.error('[BOOK] Unhandled error:', err)
+    console.error('[BOOK] Unhandled booking error:', err)
+    if (bookingCreated && db) {
+      // Rollback on unexpected failure
+      try {
+        await db.from('bookings').delete().eq('id', bookingId)
+      } catch {
+        // Ignore rollback deletion error
+      }
+    }
     const status = err?.message?.includes('authenticated') ? 401 : 500
     return res.status(status).json({ error: err?.message || 'An unexpected error occurred.' })
   }

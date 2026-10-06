@@ -465,7 +465,7 @@ export default function OfferHelp() {
                 <ul className="space-y-3.5 mb-8 text-sm text-navy/85">
                   <li className="flex items-start gap-3">
                     <CheckCircle2 className="h-5 w-5 text-gold shrink-0 mt-0.5" />
-                    <span><strong>Full control over your schedule:</strong> Connect Google Calendar or set custom weekly windows.</span>
+                    <span><strong>Full control over your schedule:</strong> Set your custom weekly availability windows.</span>
                   </li>
                   <li className="flex items-start gap-3">
                     <CheckCircle2 className="h-5 w-5 text-gold shrink-0 mt-0.5" />

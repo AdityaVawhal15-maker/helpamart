@@ -178,17 +178,9 @@ export default function Bookings() {
                           rel="noopener noreferrer"
                           className="flex items-center gap-1.5 px-4 py-2 bg-navy text-white rounded-xl text-xs font-semibold hover:bg-navy-mid transition-colors"
                         >
-                          <Video className="h-3.5 w-3.5" /> Join Meet
+                          <Video className="h-3.5 w-3.5" /> Join Google Meet
                         </a>
                       )}
-                      <a
-                        href="https://calendar.google.com"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-1.5 px-4 py-2 border border-grey-soft rounded-xl text-xs font-medium text-navy/70 hover:text-navy hover:border-navy/30 transition-colors"
-                      >
-                        <Calendar className="h-3.5 w-3.5" /> Calendar
-                      </a>
                       {b.status === 'confirmed' && new Date(b.startAt) > now && (
                         <button
                           onClick={() => cancel(b.id)}

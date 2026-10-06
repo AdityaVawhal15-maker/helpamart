@@ -19,3 +19,7 @@ data/uploads/*
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Supabase CLI temp files
+supabase/.temp/
+.temp/

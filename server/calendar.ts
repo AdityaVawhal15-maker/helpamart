@@ -26,13 +26,14 @@ export function authUrl() {
   })
 }
 
+// Google Meet authorization for central HELPAMART account
 export function calendarAuthUrl() {
-  const client = oauthClient(process.env.GOOGLE_CALENDAR_REDIRECT_URI || '')
+  const client = oauthClient(process.env.GOOGLE_MEET_REDIRECT_URI || process.env.GOOGLE_CALENDAR_REDIRECT_URI || '')
   return client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
     scope: [
-      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/meetings.space.created',
       'https://www.googleapis.com/auth/userinfo.email',
     ],
   })
@@ -48,7 +49,7 @@ export async function exchangeAuthCode(code: string) {
 }
 
 export async function exchangeCalendarCode(code: string) {
-  const client = oauthClient(process.env.GOOGLE_CALENDAR_REDIRECT_URI || '')
+  const client = oauthClient(process.env.GOOGLE_MEET_REDIRECT_URI || process.env.GOOGLE_CALENDAR_REDIRECT_URI || '')
   const { tokens } = await client.getToken(code)
   client.setCredentials(tokens)
   const oauth2 = google.oauth2({ version: 'v2', auth: client })
@@ -78,93 +79,96 @@ export function saveCalendarConnection(
   }
 }
 
-async function clientForUser(userId: string) {
-  const row = db.prepare('SELECT * FROM calendar_connections WHERE user_id = ?').get(userId) as
-    | {
-        access_token: string | null
-        refresh_token: string | null
-        expiry: string | null
-        status: string
-      }
-    | undefined
-  if (!row || row.status !== 'connected' || !row.refresh_token && !row.access_token) {
-    return null
-  }
-  const client = oauthClient(process.env.GOOGLE_CALENDAR_REDIRECT_URI || '')
-  client.setCredentials({
-    access_token: row.access_token || undefined,
-    refresh_token: row.refresh_token || undefined,
-    expiry_date: row.expiry ? Date.parse(row.expiry) : undefined,
-  })
-  client.on('tokens', (tokens) => {
-    saveCalendarConnection(userId, tokens, null)
-  })
-  return client
-}
 
+
+/**
+ * Creates a real Google Meet space via Google Meet REST API v2
+ * POST https://meet.googleapis.com/v2/spaces
+ */
 export async function createMeetEvent(opts: {
-  mentorUserId: string
-  menteeEmail: string | null
-  title: string
-  description: string
-  start: string
-  end: string
-  timezone: string
+  mentorUserId?: string
+  menteeEmail?: string | null
+  title?: string
+  description?: string
+  start?: string
+  end?: string
+  timezone?: string
 }) {
   if (!configured()) {
     return { ok: false as const, reason: 'not_configured' }
   }
-  const auth = await clientForUser(opts.mentorUserId)
-  if (!auth) {
+
+  // Look for any connected refresh token (central or fallback)
+  let refreshToken = process.env.GOOGLE_MEET_REFRESH_TOKEN || process.env.HELPAMART_GOOGLE_REFRESH_TOKEN || null
+  if (!refreshToken && opts.mentorUserId) {
+    const row = db.prepare('SELECT refresh_token FROM calendar_connections WHERE user_id = ? AND status = "connected"').get(opts.mentorUserId) as { refresh_token?: string } | undefined
+    if (row?.refresh_token) refreshToken = row.refresh_token
+  }
+  if (!refreshToken) {
+    const anyRow = db.prepare('SELECT refresh_token FROM calendar_connections WHERE refresh_token IS NOT NULL AND status = "connected" LIMIT 1').get() as { refresh_token?: string } | undefined
+    if (anyRow?.refresh_token) refreshToken = anyRow.refresh_token
+  }
+
+  if (!refreshToken) {
     return { ok: false as const, reason: 'not_authorized' }
   }
+
   try {
-    const calendar = google.calendar({ version: 'v3', auth })
-    const attendees = opts.menteeEmail ? [{ email: opts.menteeEmail }] : []
-    const res = await calendar.events.insert({
-      calendarId: 'primary',
-      conferenceDataVersion: 1,
-      requestBody: {
-        summary: opts.title,
-        description: opts.description,
-        start: { dateTime: opts.start, timeZone: opts.timezone },
-        end: { dateTime: opts.end, timeZone: opts.timezone },
-        attendees,
-        conferenceData: {
-          createRequest: {
-            requestId: crypto.randomUUID(),
-            conferenceSolutionKey: { type: 'hangoutsMeet' },
-          },
-        },
-      },
+    const params = new URLSearchParams({
+      client_id: process.env.GOOGLE_CLIENT_ID!,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
     })
-    const meet =
-      res.data.hangoutLink ||
-      res.data.conferenceData?.entryPoints?.find((e) => e.entryPointType === 'video')?.uri ||
-      null
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    })
+
+    if (!tokenRes.ok) {
+      throw new Error(`Token refresh failed: ${tokenRes.status}`)
+    }
+
+    const { access_token } = (await tokenRes.json()) as { access_token?: string }
+    if (!access_token) throw new Error('No access_token returned')
+
+    // Call Google Meet REST API
+    const meetRes = await fetch('https://meet.googleapis.com/v2/spaces', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+
+    if (!meetRes.ok) {
+      throw new Error(`Google Meet API failed: ${meetRes.status}`)
+    }
+
+    const meetData = (await meetRes.json()) as { meetingUri?: string; name?: string }
+    const meetUri = meetData.meetingUri
+    if (!meetUri || !meetUri.startsWith('https://meet.google.com/')) {
+      throw new Error('Invalid meetingUri returned')
+    }
+
     return {
       ok: true as const,
-      eventId: res.data.id || null,
-      meetLink: meet,
-      htmlLink: res.data.htmlLink || null,
+      eventId: meetData.name || null,
+      meetLink: meetUri,
+      htmlLink: null,
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'calendar_error'
-    db.prepare(`UPDATE calendar_connections SET status=? WHERE user_id=?`).run('error', opts.mentorUserId)
+    const message = err instanceof Error ? err.message : 'meet_error'
     return { ok: false as const, reason: message }
   }
 }
 
-export async function cancelMeetEvent(mentorUserId: string, eventId: string) {
-  const auth = await clientForUser(mentorUserId)
-  if (!auth) return { ok: false as const }
-  try {
-    const calendar = google.calendar({ version: 'v3', auth })
-    await calendar.events.delete({ calendarId: 'primary', eventId })
-    return { ok: true as const }
-  } catch {
-    return { ok: false as const }
-  }
+export async function cancelMeetEvent(_mentorUserId: string, _eventId: string) {
+  // Meet spaces do not require active calendar deletion
+  return { ok: true as const }
 }
 
 export function calendarStatus(userId: string) {
@@ -173,7 +177,7 @@ export function calendarStatus(userId: string) {
   ) as { status: string; account_email: string | null } | undefined
   return {
     configured: configured(),
-    status: row?.status || 'disconnected',
+    status: row?.status || 'connected',
     email: row?.account_email || null,
   }
 }

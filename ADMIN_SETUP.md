@@ -1,293 +1,111 @@
-# HELPAMART Admin Setup Guide
+# HELPAMART Google Meet Admin Setup Guide
 
 ## Overview
 
-HELPAMART uses a **central Google account** to organize Calendar events and generate Google Meet conferences for all mentorship bookings.
+HELPAMART uses **ONLY Google Meet REST API v2** (`POST https://meet.googleapis.com/v2/spaces`) to generate genuine Google Meet rooms for all mentorship sessions.
 
-This guide walks the admin through the one-time setup process to authorize the central HELPAMART Google account.
+**Google Calendar is completely removed from the booking architecture**:
+- No Google Calendar API calls (`calendar.events.insert`, `conferenceData`).
+- No mentor calendar connections required or requested.
+- No Google Calendar invitations or calendar events created.
+- One central HELPAMART Google account provides OAuth authorization solely for Google Meet.
+
+---
+
+## Architecture Flow
+
+```
+Central HELPAMART Google Account
+            ↓
+OAuth 2.0 Refresh Token (stored server-side in google_service_connections)
+            ↓
+Server-Side Access Token (generated on-demand via https://oauth2.googleapis.com/token)
+            ↓
+Google Meet REST API: POST https://meet.googleapis.com/v2/spaces
+            ↓
+REAL Google Meet Space & Meeting URI (https://meet.google.com/xxx-yyyy-zzz)
+            ↓
+Saved to Supabase booking (bookings.meet_link)
+            ↓
+Returned in API response (HTTP 200)
+            ↓
+┌─────────────────────────┬─────────────────────────┬─────────────────────────┐
+│        Frontend         │         Emails          │  In-App Notifications   │
+│  "JOIN GOOGLE MEET"     │  Real Meet Link sent    │  Sent to mentee and     │
+│  button shown instantly │  to mentee and mentor   │  mentor with Meet link  │
+└─────────────────────────┴─────────────────────────┴─────────────────────────┘
+```
 
 ---
 
 ## Prerequisites
 
-Before starting, ensure:
-
-- ✅ Vercel project is deployed to production: https://www.helpamart.com
-- ✅ Supabase project is live and migrations are applied (including `20261004070000_google_service_connection.sql`)
-- ✅ Google Cloud project created with Calendar API enabled
-- ✅ OAuth 2.0 Client ID and Client Secret obtained
+1. ✅ Vercel project deployed: `https://www.helpamart.com`
+2. ✅ Supabase project with migrations applied (`20261004070000_google_service_connection.sql`, `20261004080000_in_app_notifications.sql`)
+3. ✅ Google Cloud project with **Google Meet API** enabled
 
 ### Google Cloud Setup
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Create a new project or select existing one
-3. Enable **Google Calendar API**:
-   - Search for "Google Calendar API"
-   - Click "Enable"
-4. Create OAuth 2.0 credentials:
-   - Go to "Credentials" → "Create Credentials" → "OAuth client ID"
-   - Application type: **Web application**
-   - Authorized JavaScript origins: Add `https://www.helpamart.com`
-   - Authorized redirect URIs: Add `https://www.helpamart.com/api/admin-calendar-callback`
-   - Copy the **Client ID** and **Client Secret**
+1. Open [Google Cloud Console](https://console.cloud.google.com).
+2. Enable **Google Meet API**:
+   - Go to **APIs & Services** → **Library**.
+   - Search for **Google Meet API**.
+   - Click **Enable**.
+3. Configure OAuth 2.0 Credentials:
+   - Go to **Credentials** → **Create Credentials** → **OAuth client ID**.
+   - Application type: **Web application**.
+   - Authorized JavaScript origins:
+     - `https://www.helpamart.com`
+     - `http://localhost:5173` (for local development)
+   - Authorized redirect URIs:
+     - `https://www.helpamart.com/api/admin-meet-callback`
+     - `https://www.helpamart.com/api/admin-calendar-callback` (legacy alias)
+4. Copy your **Client ID** and **Client Secret**.
 
 ---
 
 ## Step 1: Set Vercel Environment Variables
 
-### Required Variables
+In your [Vercel Dashboard](https://vercel.com) under **Settings** → **Environment Variables**:
 
-Log in to [Vercel Dashboard](https://vercel.com) and go to:
-- **Settings** → **Environment Variables** → **Production**
-
-Add these variables:
-
-| Variable | Value | Notes |
-|---|---|---|
-| `GOOGLE_CLIENT_ID` | From Google Cloud Console | Never expose in frontend |
-| `GOOGLE_CLIENT_SECRET` | From Google Cloud Console | Never expose in frontend |
-| `ADMIN_SECRET` | Any secure random string (32+ chars) | Used to protect admin endpoints |
-| `SUPABASE_URL` | Your Supabase project URL | Already set |
-| `SUPABASE_SERVICE_ROLE_KEY` | Your Supabase service-role key | Already set |
-| `SUPABASE_ANON_KEY` | Your Supabase anono key | Already set |
-| `SMTP_HOST` | Your email provider's SMTP host | For booking confirmations |
-| `SMTP_PORT` | Usually 587 or 465 | For booking confirmations |
-| `SMTP_USER` | Your email address | For booking confirmations |
-| `SMTP_PASS` | Your email password or app-specific password | For booking confirmations |
-| `SMTP_FROM` | e.g. `HELPAMART <guidance@helpamart.com>` | From address for emails |
-| `APP_URL` | `https://www.helpamart.com` | Already set |
-
-After adding these, **redeploy** your Vercel project:
-- Go to **Deployments** → **Trigger redeploy** (or push to main branch)
+| Variable | Description |
+|---|---|
+| `GOOGLE_CLIENT_ID` | OAuth Client ID from Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | OAuth Client Secret from Google Cloud Console |
+| `GOOGLE_MEET_REDIRECT_URI` | `https://www.helpamart.com/api/admin-meet-callback` (optional, defaults to this) |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role secret |
+| `SUPABASE_ANON_KEY` | Supabase anon key |
+| `SMTP_HOST` | Hostinger SMTP host (e.g. `smtp.hostinger.com`) |
+| `SMTP_PORT` | `465` (SSL) or `587` (TLS) |
+| `SMTP_USER` | Email username (e.g. `guidance@helpamart.com`) |
+| `SMTP_PASS` | Email password |
+| `SMTP_FROM` | `HELPAMART <guidance@helpamart.com>` |
+| `APP_URL` | `https://www.helpamart.com` |
 
 ---
 
-## Step 2: Verify Central Connection Status
+## Step 2: One-Time Google Meet Authorization via Browser
 
-Before authorizing, check if the connection is already configured:
+**No terminal or curl commands are required.**
 
-```bash
-curl -H "Authorization: Bearer <ADMIN_SECRET>" \
-  https://www.helpamart.com/api/admin-calendar-status
-```
-
-Expected response if configured:
-```json
-{
-  "configured": true,
-  "accountEmail": "calendar@helpamart.com",
-  "source": "db"
-}
-```
-
-Expected response if not yet configured:
-```json
-{
-  "configured": false,
-  "reason": "no_token",
-  "detail": "No central Google account found. Run /api/admin-calendar-connect to authorise."
-}
-```
+1. Visit your admin setup page in the browser:
+   **`https://www.helpamart.com/admin/meet`**
+2. Click **Connect HELPAMART Google Meet**.
+3. Sign in with the central HELPAMART Google account.
+4. Google will request consent for:
+   - `Create and manage meetings in Google Meet` (`https://www.googleapis.com/auth/meetings.space.created`)
+5. Upon approval, you will be redirected back to `/admin/meet`:
+   - ✅ **Google Meet Connected** badge appears.
+   - Shows connected email.
+   - Refresh token is stored securely in the `google_service_connections` table.
+   - The token is never exposed to any browser or client.
 
 ---
 
-## Step 3: Authorize the Central HELPAMART Google Account
+## Verification & Booking Guarantees
 
-The admin must sign in with the **central HELPAMART Google account** (e.g., `calendar@helpamart.com`).
-
-### Option A: Via Authorization Header (Recommended — No Browser History)
-
-Use curl or Postman to initiate the OAuth flow:
-
-```bash
-curl -L -H "Authorization: Bearer <ADMIN_SECRET>" \
-  https://www.helpamart.com/api/admin-calendar-connect
-```
-
-This will:
-1. Redirect to Google's OAuth consent screen
-2. Prompt you to sign in with the central HELPAMART Google account
-3. Ask for Calendar permission
-4. Redirect back to `/api/admin-calendar-callback`
-5. Store the refresh token in `google_service_connections` table
-6. Show a success page
-
-### Option B: Via Signed URL Token (If Authorization Header Not Available)
-
-Generate a signed token (expires in 10 minutes):
-
-```bash
-node -e "
-  const c = require('crypto');
-  const s = '<your-ADMIN_SECRET>';
-  const exp = Date.now() + 600000;
-  const d = JSON.stringify({exp});
-  const sig = c.createHmac('sha256', s).update(d).digest('hex');
-  console.log(Buffer.from(JSON.stringify({d,sig})).toString('base64url'));
-"
-```
-
-Then visit in your browser:
-```
-https://www.helpamart.com/api/admin-calendar-connect?token=<output>
-```
-
----
-
-## Step 4: Verify Authorization Success
-
-After the callback, you should see:
-
-```
-✅ Google Calendar Connected
-
-The central HELPAMART Google account has been authorised.
-Connected account: calendar@helpamart.com
-
-Every new booking will now automatically generate a real Google Meet conference.
-The authorisation tokens have been stored securely on the server.
-No credentials were sent to this browser.
-```
-
-Now verify the connection is active:
-
-```bash
-curl -H "Authorization: Bearer <ADMIN_SECRET>" \
-  https://www.helpamart.com/api/admin-calendar-status
-```
-
-Should return:
-```json
-{
-  "configured": true,
-  "accountEmail": "calendar@helpamart.com",
-  "source": "db"
-}
-```
-
----
-
-## Step 5: Test a Real Booking
-
-Now that the central account is authorized, test a complete booking flow:
-
-1. **Go to production**: https://www.helpamart.com
-2. **Find a mentor** in the search / browse
-3. **View their profile** → Select a service → Choose a time slot
-4. **Confirm Booking**
-5. **Expected behavior**:
-   - ✅ Booking confirmation page appears
-   - ✅ Small premium gold confetti celebration animation
-   - ✅ "You're booked" message
-   - ✅ "Join Google Meet" button with real URL
-   - ✅ "Open Google Calendar" button
-   - ✅ "View My Bookings" button
-   - ✅ No error messages about "Google Calendar is not configured"
-
-6. **Check emails**:
-   - Mentor receives: "New HELPAMART session scheduled"
-   - Mentee receives: "Your HELPAMART mentorship session is confirmed"
-   - Both emails include the real Google Meet URL
-
-7. **Open Google Meet**: Click "Join Google Meet" and confirm it opens a real Google Meet conference
-
----
-
-## Troubleshooting
-
-### Problem: "Google Calendar is not configured on this server"
-
-**Solution**: The central Google account has not been authorized. Run Step 3 above.
-
-### Problem: Booking succeeded but no Google Meet URL
-
-**Solution**: The Google Calendar API took longer than 20 seconds to generate the Meet conference. This is rare but can happen.
-- **Workaround**: The confirmation email will include the Meet URL if it eventually succeeds
-- Check Vercel logs: https://vercel.com/dashboard → Logs → `/api/book`
-- Look for `[BOOK] Meet video entry point found`
-
-### Problem: OAuth redirect fails or "Forbidden"
-
-**Solution**: 
-- Check `ADMIN_SECRET` is set correctly and matches the header/token
-- Verify `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are correct
-- Confirm redirect URI `https://www.helpamart.com/api/admin-calendar-callback` is registered in Google Cloud Console
-- Check Vercel logs for specific error
-
-### Problem: Central account revoked or token expired
-
-**Solution**: 
-- Run Step 3 again to re-authorize the central HELPAMART Google account
-- The new token will overwrite the old one in `google_service_connections`
-
----
-
-## Monitoring
-
-### Check Central Connection Status
-
-```bash
-# As admin:
-curl -H "Authorization: Bearer <ADMIN_SECRET>" \
-  https://www.helpamart.com/api/admin-calendar-status
-```
-
-### Review Booking Logs
-
-In **Vercel Dashboard** → **Functions** → **Logs**:
-- Search for `[BOOK]` to find booking traces
-- Look for `Central Calendar client loaded`
-- Check for `Meet video entry point found = true`
-
-### Check Database
-
-In **Supabase Dashboard** → **SQL Editor**:
-```sql
-SELECT key, status, account_email, updated_at
-FROM public.google_service_connections
-WHERE key = 'helpamart_organizer';
-```
-
-Should show one row with:
-- `status`: `connected`
-- `account_email`: The central HELPAMART Google account email
-- `updated_at`: When the connection was last authorized
-
----
-
-## Maintenance
-
-### Renew Authorization
-
-If the Google account access is revoked or needs to be re-authorized:
-1. Go to [myaccount.google.com/permissions](https://myaccount.google.com/permissions)
-2. Find HELPAMART and revoke access
-3. Run Step 3 above to re-authorize
-
-### Rotate ADMIN_SECRET
-
-If the `ADMIN_SECRET` is compromised:
-1. Generate a new secret
-2. Update `ADMIN_SECRET` in Vercel
-3. Redeploy
-4. The old secret will no longer work for `/api/admin-calendar-connect` or `/api/admin-calendar-status`
-
----
-
-## Security Notes
-
-- ✅ **Refresh tokens are never shown in the browser** — they are stored only in the Supabase database (`google_service_connections` table) using the service-role client
-- ✅ **`ADMIN_SECRET` is never exposed in URLs by default** — use the `Authorization: Bearer` header
-- ✅ **Calendar tokens never leave the server** — not in localStorage, not in frontend code
-- ✅ **OAuth state is HMAC-signed** — prevents CSRF attacks on the callback endpoint
-- ✅ **Secrets are never logged** — check logs but tokens will not appear
-
----
-
-## Support
-
-For issues or questions:
-- Check **Vercel Logs**: https://vercel.com/dashboard → Functions
-- Check **Supabase Logs**: https://supabase.com → Project → Database → Logs
-- Review this guide again — most issues are configuration-related
-
+- **No Silent Failures**: If Google Meet API fails or credentials are missing, the booking is automatically rolled back and deleted. An error (HTTP 503) is returned.
+- **Genuine Meet URLs**: Only URLs returned by `POST https://meet.googleapis.com/v2/spaces` (matching `https://meet.google.com/...`) are accepted.
+- **Immediate Frontend Access**: The mentee confirmation screen shows `[ JOIN GOOGLE MEET ]` immediately.
+- **Automated Notifications**: Real Meet link is included directly in emails and in-app notifications.

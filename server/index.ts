@@ -324,8 +324,7 @@ function serializeBooking(b: BookingRow) {
     priceCents: b.price_cents,
     currency: b.currency,
     meetLink: b.meet_link || null,
-    calendarEventId: b.calendar_event_id || null,
-    calendarStatus: b.calendar_status || null,
+    meetUrl: b.meet_link || null,
     notes: b.notes || null,
     createdAt: b.created_at,
     // Joined fields (present only in list queries)
@@ -1101,20 +1100,16 @@ app.post('/api/bookings', async (req, res) => {
       end: end.toISOString(),
       timezone,
     })
-    if (cal.ok) {
-      meetLink = cal.meetLink || null
-      db.prepare(
-        `UPDATE bookings SET meet_link=?, calendar_event_id=?, calendar_status='created', updated_at=? WHERE id=?`,
-      ).run(cal.meetLink, cal.eventId, nowIso(), bookingId)
-    } else {
-      calendarNote =
-        cal.reason === 'not_configured'
-          ? 'Your booking is confirmed. Google Calendar is not configured on this server, so a Meet link was not created.'
-          : cal.reason === 'not_authorized'
-            ? 'Your booking is confirmed. The mentor has not connected Google Calendar yet, so a Meet link is not available.'
-            : 'Your booking was saved, but calendar connection needs attention.'
-      db.prepare(`UPDATE bookings SET calendar_status=?, updated_at=? WHERE id=?`).run(cal.reason, nowIso(), bookingId)
+    if (!cal.ok || !cal.meetLink) {
+      db.prepare('DELETE FROM bookings WHERE id = ?').run(bookingId)
+      return res.status(503).json({
+        error: 'Could not create Google Meet space. Central Google account authorization is required.',
+      })
     }
+    meetLink = cal.meetLink
+    db.prepare(
+      `UPDATE bookings SET meet_link=?, updated_at=? WHERE id=?`,
+    ).run(meetLink, nowIso(), bookingId)
 
     // Send email notifications (non-blocking — errors are logged but do not fail the request)
     const emailDetails = {

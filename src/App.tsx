@@ -27,6 +27,7 @@ const MentorBookings = lazy(() => import('@/pages/mentor-dashboard/MentorBooking
 const MentorAvailability = lazy(() => import('@/pages/mentor-dashboard/MentorAvailability'))
 const MentorServices = lazy(() => import('@/pages/mentor-dashboard/MentorServices'))
 const MentorProfileEdit = lazy(() => import('@/pages/mentor-dashboard/MentorProfileEdit'))
+const AdminMeet = lazy(() => import('@/pages/admin/AdminMeet'))
 
 // Pages that use a transparent navbar initially
 const HERO_PAGES = ['/']
@@ -86,6 +87,8 @@ export default function App() {
           <Route path="/mentor-dashboard/availability" element={<MentorAvailability />} />
           <Route path="/mentor-dashboard/services" element={<MentorServices />} />
           <Route path="/mentor-dashboard/profile" element={<MentorProfileEdit />} />
+          <Route path="/admin/meet" element={<AdminMeet />} />
+          <Route path="/admin" element={<AdminMeet />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
