@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
-import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 import { CATEGORIES } from '@/data/taxonomy'
+import { getMentorProfile, updateMentorProfile } from '@/lib/mentor'
 
 export default function MentorProfileEdit() {
-  const { user, mentor, loading: authLoading, refresh, saveMentorProfile } = useAuth()
+  const { user, mentor, loading: authLoading } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [saving, setSaving] = useState(false)
+  const [profileLoading, setProfileLoading] = useState(true)
 
   const [form, setForm] = useState({
     fullName: mentor?.name ?? '',
@@ -25,33 +26,38 @@ export default function MentorProfileEdit() {
     photoUrl: mentor?.photoUrl ?? '',
     yearsExperience: mentor?.yearsExperience ?? 0,
     categories: mentor?.categories ?? [] as string[],
-    languages: mentor?.languages ?? ['English'],
   })
-
-  useEffect(() => {
-    if (mentor) {
-      setForm({
-        fullName: mentor.name ?? '',
-        roleTitle: mentor.role ?? '',
-        company: mentor.company ?? '',
-        location: mentor.location ?? '',
-        intro: mentor.intro ?? '',
-        about: mentor.about ?? '',
-        linkedinUrl: mentor.linkedinUrl ?? '',
-        websiteUrl: mentor.websiteUrl ?? '',
-        photoUrl: mentor.photoUrl ?? '',
-        yearsExperience: mentor.yearsExperience ?? 0,
-        categories: mentor.categories ?? [],
-        languages: mentor.languages ?? ['English'],
-      })
-    }
-  }, [mentor])
 
   useEffect(() => {
     if (authLoading) return
     if (!user) { navigate('/login?next=/mentor-dashboard/profile'); return }
     if (!mentor) { navigate('/become-a-mentor'); return }
-  }, [user, mentor, authLoading, navigate])
+
+    setProfileLoading(true)
+    getMentorProfile(mentor.id)
+      .then((profile) => {
+        if (profile) {
+          setForm({
+            fullName: profile.name ?? '',
+            roleTitle: profile.role ?? '',
+            company: profile.company ?? '',
+            location: profile.location ?? '',
+            intro: profile.intro ?? '',
+            about: profile.about ?? '',
+            linkedinUrl: profile.linkedinUrl ?? '',
+            websiteUrl: profile.websiteUrl ?? '',
+            photoUrl: profile.photoUrl ?? '',
+            yearsExperience: profile.yearsExperience ?? 0,
+            categories: profile.categories ?? [],
+          })
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load profile:', err)
+        toast('Failed to load profile', 'error')
+      })
+      .finally(() => setProfileLoading(false))
+  }, [user, mentor, authLoading, navigate, toast])
 
   function set(key: string, value: unknown) {
     setForm(prev => ({ ...prev, [key]: value }))
@@ -66,26 +72,24 @@ export default function MentorProfileEdit() {
   async function save() {
     setSaving(true)
     try {
-      await saveMentorProfile({
+      if (!mentor) throw new Error('Not authenticated')
+      await updateMentorProfile(mentor.id, {
         name: form.fullName,
         role: form.roleTitle,
         company: form.company,
         location: form.location,
         intro: form.intro,
         about: form.about,
-        linkedinUrl: form.linkedinUrl || null,
-        websiteUrl: form.websiteUrl || null,
-        photoUrl: form.photoUrl || null,
+        linkedinUrl: form.linkedinUrl || undefined,
+        websiteUrl: form.websiteUrl || undefined,
+        photoUrl: form.photoUrl || undefined,
         yearsExperience: form.yearsExperience,
         categories: form.categories,
       })
-      try {
-        await api('/api/mentor/me', { method: 'PUT', body: JSON.stringify(form) })
-      } catch {}
-      await refresh()
       toast('Profile updated!', 'success')
     } catch (e: unknown) {
-      toast((e as Error).message || 'Could not save.', 'error')
+      console.error('Failed to update profile:', e)
+      toast((e as Error).message || 'Could not save profile.', 'error')
     } finally {
       setSaving(false)
     }
@@ -99,7 +103,12 @@ export default function MentorProfileEdit() {
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
           <h1 className="text-display-md font-display text-navy mb-8">Edit Profile</h1>
 
-          <div className="bg-white rounded-2xl border border-grey-soft p-6 space-y-6">
+          {profileLoading ? (
+            <div className="bg-white rounded-2xl border border-grey-soft p-6">
+              <div className="space-y-4">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton h-12 rounded-xl" />)}</div>
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-grey-soft p-6 space-y-6">
             {/* Photo */}
             <div className="flex items-center gap-4">
               <div className="w-20 h-20 rounded-2xl overflow-hidden shrink-0 bg-ivory-dark">
@@ -154,7 +163,8 @@ export default function MentorProfileEdit() {
             >
               {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save Changes'}
             </button>
-          </div>
+            </div>
+          )}
         </motion.div>
       </div>
     </div>

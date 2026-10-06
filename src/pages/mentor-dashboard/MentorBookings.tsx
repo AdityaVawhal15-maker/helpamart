@@ -2,9 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Calendar, Clock, Video } from 'lucide-react'
-import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
-import type { Booking } from '@/types'
+import { getMentorBookings, type MentorBooking } from '@/lib/mentor'
 
 const STATUS_STYLES: Record<string, string> = {
   pending: 'bg-orange/10 text-orange',
@@ -16,8 +15,9 @@ const STATUS_STYLES: Record<string, string> = {
 export default function MentorBookings() {
   const { user, mentor, loading: authLoading } = useAuth()
   const navigate = useNavigate()
-  const [bookings, setBookings] = useState<Booking[]>([])
+  const [bookings, setBookings] = useState<MentorBooking[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (authLoading) return
@@ -29,9 +29,18 @@ export default function MentorBookings() {
       navigate('/become-a-mentor')
       return
     }
-    api<{ bookings: Booking[] }>('/api/mentor/bookings')
-      .then((d) => setBookings(d.bookings))
-      .catch(() => {})
+
+    setLoading(true)
+    setError(null)
+    getMentorBookings(mentor.id)
+      .then((data) => {
+        setBookings(data)
+      })
+      .catch((err) => {
+        console.error('Failed to load mentor bookings:', err)
+        setError('Failed to load bookings. Please try again.')
+        setBookings([])
+      })
       .finally(() => setLoading(false))
   }, [user, mentor, authLoading, navigate])
 
@@ -51,6 +60,12 @@ export default function MentorBookings() {
 
           {loading ? (
             <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="skeleton h-24 rounded-2xl" />)}</div>
+          ) : error ? (
+            <div className="text-center py-20">
+              <Calendar className="h-10 w-10 text-maroon mx-auto mb-4" />
+              <p className="text-display-md font-display text-navy mb-2">Something went wrong.</p>
+              <p className="text-grey">{error}</p>
+            </div>
           ) : bookings.length === 0 ? (
             <div className="text-center py-20">
               <Calendar className="h-10 w-10 text-grey-mid mx-auto mb-4" />

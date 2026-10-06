@@ -3,7 +3,7 @@ import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Calendar, Settings, User, Eye, BarChart3, Clock } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
-import { api } from '@/lib/api'
+import { getMentorStats } from '@/lib/mentor'
 
 const NAV = [
   { to: '/mentor-dashboard', label: 'Overview', icon: <BarChart3 className="h-4 w-4" />, end: true },
@@ -28,9 +28,19 @@ export default function MentorDashboard() {
       navigate('/become-a-mentor')
       return
     }
-    api<{ upcoming: number; completed: number }>('/api/mentor/bookings/stats')
-      .then((d) => setStats({ ...d, views: 0 }))
-      .catch(() => {})
+
+    getMentorStats(mentor.id)
+      .then((data) => {
+        setStats({
+          upcoming: data.upcomingSessions,
+          completed: data.completedSessions,
+          views: data.profileViews,
+        })
+      })
+      .catch((err) => {
+        console.error('Failed to load mentor stats:', err)
+        setStats({ upcoming: 0, completed: 0, views: 0 })
+      })
   }, [user, mentor, loading, navigate])
 
   if (loading) {

@@ -182,83 +182,11 @@ async function handleClientApiFallback<T>(
     return { user: updatedUser } as unknown as T
   }
 
-  // 4. /api/mentor/me
+  // 4. /api/mentor/me — DEPRECATED
+  // Mentor profile is now loaded directly from Supabase via AuthContext
+  // Dashboard pages use getMentorProfile(), updateMentorProfile() from src/lib/mentor.ts
   if (path.startsWith('/api/mentor/me')) {
-    if (!userId) throw new Error('Not authenticated')
-
-    if (method === 'GET') {
-      let mentorObj: Mentor | null = null
-      try {
-        const raw = localStorage.getItem(`helpa_mentor_${userId}`)
-        if (raw) mentorObj = JSON.parse(raw)
-      } catch {}
-      return { mentor: mentorObj } as unknown as T
-    }
-
-    if (method === 'PUT' || method === 'POST') {
-      let body: any = {}
-      try {
-        body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-      } catch {}
-
-      let existing: Mentor | null = null
-      try {
-        const raw = localStorage.getItem(`helpa_mentor_${userId}`)
-        if (raw) existing = JSON.parse(raw)
-      } catch {}
-
-      const name = body.fullName || body.name || existing?.name || activeUser?.user_metadata?.full_name || 'Mentor'
-      const slug =
-        existing?.slug ||
-        name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/(^-|-$)/g, '') ||
-        `mentor-${userId.slice(0, 8)}`
-
-      const updatedMentor: Mentor = {
-        id: existing?.id || crypto.randomUUID(),
-        slug,
-        name,
-        role: body.roleTitle || body.role || existing?.role || '',
-        company: body.company !== undefined ? body.company : existing?.company || '',
-        location: body.location !== undefined ? body.location : existing?.location || '',
-        intro: body.intro !== undefined ? body.intro : existing?.intro || '',
-        about: body.about !== undefined ? body.about : existing?.about || '',
-        photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing?.photoUrl || null,
-        languages: body.languages || existing?.languages || ['English'],
-        yearsExperience: body.yearsExperience !== undefined ? body.yearsExperience : existing?.yearsExperience ?? null,
-        linkedinUrl: body.linkedinUrl !== undefined ? body.linkedinUrl : existing?.linkedinUrl || null,
-        websiteUrl: body.websiteUrl !== undefined ? body.websiteUrl : existing?.websiteUrl || null,
-        education: body.education || existing?.education || [],
-        companies: body.companies || existing?.companies || [],
-        achievements: body.achievements || existing?.achievements || [],
-        status: existing?.status || 'draft',
-        timezone: body.timezone || existing?.timezone || 'UTC',
-        bufferMinutes: body.bufferMinutes || existing?.bufferMinutes || 15,
-        advanceDays: body.advanceDays || existing?.advanceDays || 30,
-        minNoticeHours: body.minNoticeHours || existing?.minNoticeHours || 24,
-        maxBookingsPerDay: body.maxBookingsPerDay || existing?.maxBookingsPerDay || 4,
-        categories: body.categories || existing?.categories || [],
-        skills: body.skills || existing?.skills || [],
-        services: body.services || existing?.services || [],
-        availability: body.availability || existing?.availability || [],
-        startingPriceCents: existing?.startingPriceCents || null,
-        availabilityPreview: existing?.availabilityPreview || null,
-      }
-
-      try {
-        localStorage.setItem(`helpa_mentor_${userId}`, JSON.stringify(updatedMentor))
-      } catch {}
-
-      try {
-        await supabase.auth.updateUser({
-          data: { mentor_profile: updatedMentor },
-        })
-      } catch {}
-
-      return { mentor: updatedMentor } as unknown as T
-    }
+    throw new Error('Mentor profile endpoint deprecated. Use direct Supabase queries.')
   }
 
   // 5. /api/mentor/publish
@@ -285,20 +213,16 @@ async function handleClientApiFallback<T>(
     return { mentor: mentorObj } as unknown as T
   }
 
-  // 6. /api/mentor/availability
+  // 6. /api/mentor/availability — DEPRECATED
+  // Availability is now loaded directly from Supabase via getMentorAvailability(), updateMentorAvailability()
   if (path.startsWith('/api/mentor/availability')) {
-    if (method === 'GET') {
-      return { rules: [], timezone: 'UTC' } as unknown as T
-    }
-    return { ok: true } as unknown as T
+    throw new Error('Mentor availability endpoint deprecated. Use direct Supabase queries.')
   }
 
-  // 7. /api/mentor/services
+  // 7. /api/mentor/services — DEPRECATED
+  // Services are now loaded directly from Supabase via getMentorServices(), updateMentorServices()
   if (path.startsWith('/api/mentor/services')) {
-    if (method === 'GET') {
-      return { services: [] } as unknown as T
-    }
-    return { ok: true } as unknown as T
+    throw new Error('Mentor services endpoint deprecated. Use direct Supabase queries.')
   }
 
   // 8. /api/mentors — query Supabase directly (shared production DB, not localStorage)

@@ -2,19 +2,18 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Globe, Copy, Loader2 } from 'lucide-react'
-import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
+import { getMentorAvailability, updateMentorAvailability, type AvailabilityRule } from '@/lib/mentor'
 
-type Rule = { weekday: number; startTime: string; endTime: string; enabled: boolean }
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 export default function MentorAvailability() {
-  const { user, mentor, loading: authLoading, refresh } = useAuth()
+  const { user, mentor, loading: authLoading } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [timezone, setTimezone] = useState(mentor?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
-  const [availability, setAvailability] = useState<Rule[]>([
+  const [availability, setAvailability] = useState<AvailabilityRule[]>([
     { weekday: 0, startTime: '10:00', endTime: '14:00', enabled: false },
     { weekday: 1, startTime: '09:00', endTime: '17:00', enabled: true },
     { weekday: 2, startTime: '09:00', endTime: '17:00', enabled: true },
@@ -30,16 +29,21 @@ export default function MentorAvailability() {
     if (authLoading) return
     if (!user) { navigate('/login?next=/mentor-dashboard/availability'); return }
     if (!mentor) { navigate('/become-a-mentor'); return }
-    api<{ rules: Rule[]; timezone: string }>('/api/mentor/availability')
+
+    setLoading(true)
+    getMentorAvailability(mentor.id)
       .then(d => {
         if (d.rules.length) setAvailability(d.rules)
-        setTimezone(d.timezone ?? mentor.timezone)
+        setTimezone(d.timezone || mentor.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error('Failed to load availability:', err)
+        toast('Failed to load availability', 'error')
+      })
       .finally(() => setLoading(false))
-  }, [user, mentor])
+  }, [user, mentor, authLoading, navigate, toast])
 
-  function update(weekday: number, key: keyof Rule, value: unknown) {
+  function update(weekday: number, key: keyof AvailabilityRule, value: unknown) {
     setAvailability(prev => prev.map(r => r.weekday === weekday ? { ...r, [key]: value } : r))
   }
 
@@ -53,14 +57,12 @@ export default function MentorAvailability() {
   async function save() {
     setSaving(true)
     try {
-      await api('/api/mentor/availability', {
-        method: 'PUT',
-        body: JSON.stringify({ timezone, rules: availability }),
-      })
-      await refresh()
+      if (!mentor) throw new Error('Not authenticated')
+      await updateMentorAvailability(mentor.id, availability, timezone)
       toast('Availability saved!', 'success')
     } catch (e: unknown) {
-      toast((e as Error).message || 'Could not save.', 'error')
+      console.error('Failed to save availability:', e)
+      toast((e as Error).message || 'Could not save availability.', 'error')
     } finally {
       setSaving(false)
     }

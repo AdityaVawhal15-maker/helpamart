@@ -2,18 +2,15 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Plus, Trash2, Loader2 } from 'lucide-react'
-import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
-import type { MentorService } from '@/types'
-
-type Draft = Omit<MentorService, 'id'>
+import { getMentorServices, updateMentorServices, type MentorService } from '@/lib/mentor'
 
 export default function MentorServices() {
   const { user, mentor, loading: authLoading } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
-  const [services, setServices] = useState<Array<MentorService | Draft & { id?: string }>>([])
+  const [services, setServices] = useState<MentorService[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -21,11 +18,16 @@ export default function MentorServices() {
     if (authLoading) return
     if (!user) { navigate('/login?next=/mentor-dashboard/services'); return }
     if (!mentor) { navigate('/become-a-mentor'); return }
-    api<{ services: MentorService[] }>('/api/mentor/services')
-      .then(d => setServices(d.services))
-      .catch(() => {})
+
+    setLoading(true)
+    getMentorServices(mentor.id)
+      .then(data => setServices(data))
+      .catch((err) => {
+        console.error('Failed to load services:', err)
+        toast('Failed to load services', 'error')
+      })
       .finally(() => setLoading(false))
-  }, [user, mentor])
+  }, [user, mentor, authLoading, navigate, toast])
 
   function add() {
     setServices(prev => [...prev, { title: '', description: '', durationMinutes: 45, priceCents: 0, currency: 'USD', format: 'online' }])
@@ -42,13 +44,12 @@ export default function MentorServices() {
   async function save() {
     setSaving(true)
     try {
-      await api('/api/mentor/services', {
-        method: 'PUT',
-        body: JSON.stringify({ services }),
-      })
+      if (!mentor) throw new Error('Not authenticated')
+      await updateMentorServices(mentor.id, services)
       toast('Services saved!', 'success')
     } catch (e: unknown) {
-      toast((e as Error).message || 'Could not save.', 'error')
+      console.error('Failed to save services:', e)
+      toast((e as Error).message || 'Could not save services.', 'error')
     } finally {
       setSaving(false)
     }
