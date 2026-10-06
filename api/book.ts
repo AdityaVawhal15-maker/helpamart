@@ -505,6 +505,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // 7. Google Calendar + Meet via central HELPAMART Google account
+    // CRITICAL: This is BLOCKING — booking only succeeds if Meet generation succeeds.
+    // Do not return HTTP 200 with meetLink=null.
     let meetLink: string | null = null
     let calendarEventId: string | null = null
     let calendarHtmlLink: string | null = null
@@ -516,51 +518,77 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     if (!calAuth) {
       console.error(`[BOOK] CRITICAL: central_calendar_auth=null. No central Google connection found. Check google_service_connections table and env vars.`)
-    } else {
-      console.log(`[BOOK] central_calendar_auth=OK`)
+      // Delete the booking since Meet is required
+      await db.from('bookings').delete().eq('id', bookingId)
+      return res.status(503).json({
+        error: 'Google Calendar is not configured on this server. Please contact support.',
+        details: 'The central HELPAMART Google account needs authorization. Run /api/admin-calendar-connect first.',
+      })
     }
 
-    if (calAuth) {
-      console.log(`[BOOK] Creating Calendar event with Google Calendar API...`)
-      const calResult = await createCalendarEvent({
-        auth: calAuth,
-        mentorName: mentorRow.name,
-        menteeEmail,
-        mentorEmail,
-        startAt: start.toISOString(),
-        endAt: end.toISOString(),
-        timezone,
-        bookingId,
-        serviceTitle: service.title,
+    console.log(`[BOOK] central_calendar_auth=OK`)
+    console.log(`[BOOK] Creating Calendar event with Google Calendar API...`)
+    
+    const calResult = await createCalendarEvent({
+      auth: calAuth,
+      mentorName: mentorRow.name,
+      menteeEmail,
+      mentorEmail,
+      startAt: start.toISOString(),
+      endAt: end.toISOString(),
+      timezone,
+      bookingId,
+      serviceTitle: service.title,
+    })
+
+    if (!calResult.ok) {
+      // Calendar event creation failed — delete booking and reject
+      await db.from('bookings').delete().eq('id', bookingId)
+      console.error(`[BOOK] calendar_event_creation_failed, reason=${calResult.reason}`)
+      return res.status(503).json({
+        error: 'Could not create your Google Meet conference. Please try again.',
+        details: calResult.reason,
       })
+    }
 
-      if (calResult.ok) {
-        meetLink = calResult.meetLink ?? null
-        calendarEventId = calResult.eventId ?? null
-        calendarHtmlLink = calResult.htmlLink ?? null
-        calendarStatus = meetLink ? 'created' : 'created_no_meet'
-        console.log(`[BOOK] calendar_event_created=true, eventId=${calendarEventId}, meetLink_present=${!!meetLink}`)
-      } else {
-        calendarStatus = calResult.reason || 'calendar_error'
-        console.error(`[BOOK] calendar_event_created=false, reason=${calResult.reason}`)
-      }
+    // Event was created, but Meet might still be pending
+    meetLink = calResult.meetLink ?? null
+    calendarEventId = calResult.eventId ?? null
+    calendarHtmlLink = calResult.htmlLink ?? null
+    calendarStatus = meetLink ? 'created_with_meet' : 'created_pending_meet'
 
-      await db.from('bookings').update({
-        meet_link: meetLink,
-        calendar_event_id: calendarEventId,
-        calendar_html_link: calendarHtmlLink,
-        calendar_status: calendarStatus,
-        updated_at: new Date().toISOString(),
-      }).eq('id', bookingId)
-    } else {
-      console.error(`[BOOK] calendar_status=not_configured — central auth is unavailable`)
-      await db.from('bookings').update({
-        calendar_status: 'not_configured',
-        updated_at: new Date().toISOString(),
-      }).eq('id', bookingId)
+    if (!meetLink) {
+      // Event created but Meet polling timed out — try to clean up and reject
+      console.warn(`[BOOK] Meet URL not obtained after polling for event ${calendarEventId}`)
+      await db.from('bookings').delete().eq('id', bookingId)
+      return res.status(503).json({
+        error: 'Google Meet conference creation is taking longer than expected. Please try again in a moment.',
+        details: 'Calendar event was created but Meet generation timed out.',
+      })
+    }
+
+    console.log(`[BOOK] Meet generation successful: ${meetLink}`)
+
+    // Persist the final booking with real Meet URL
+    const { error: updateErr } = await db.from('bookings').update({
+      meet_link: meetLink,
+      calendar_event_id: calendarEventId,
+      calendar_html_link: calendarHtmlLink,
+      calendar_status: calendarStatus,
+      updated_at: new Date().toISOString(),
+    }).eq('id', bookingId)
+
+    if (updateErr) {
+      console.error(`[BOOK] Failed to update booking with Meet URL: ${updateErr.message}`)
+      // Booking is already in DB but without Meet link — this is an error state
+      // but we've already created the Calendar event, so we can't easily roll back
+      return res.status(500).json({
+        error: 'Booking was created but could not be finalized. Please contact support.',
+      })
     }
 
     // 8. Send confirmation emails (fire-and-forget — booking is already persisted)
+    // Both mentor and mentee receive confirmation with REAL Meet URL
     sendBookingEmails({
       bookingId,
       mentorName: mentorRow.name,
@@ -573,13 +601,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       timezone,
       priceCents: finalPriceCents,
       currency,
-      meetLink,
+      meetLink, // guaranteed non-null at this point
     }).catch(e => console.error('[BOOK] Email dispatch error:', e))
 
+    console.log(`[BOOK] Booking complete: ${bookingId}, meetLink=${meetLink}, mentee=${menteeEmail}, mentor=${mentorEmail}`)
+
+    // Success — guaranteed to have real Meet URL
     return res.status(200).json({
       booking: {
         id: bookingId,
-        meetLink,
+        meetLink, // guaranteed to be a real https://meet.google.com/... URL
         calendarEventId,
         calendarHtmlLink,
         calendarStatus,

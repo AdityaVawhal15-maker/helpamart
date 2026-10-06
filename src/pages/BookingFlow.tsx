@@ -254,23 +254,26 @@ export default function BookingFlow() {
               transition={{ delay: 0.6, duration: 0.5 }}
               className="space-y-3"
             >
-              {/* Join Google Meet — always shown; graceful if URL not yet available */}
-              {booking.meetLink ? (
-                <a
-                  href={booking.meetLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 w-full py-3.5 bg-navy text-white rounded-xl font-semibold hover:bg-navy-mid transition-all hover:shadow-[0_6px_20px_rgba(7,26,53,0.2)]"
-                >
-                  <VideoIcon className="h-4 w-4" />
-                  Join Google Meet
-                </a>
-              ) : (
-                <div className="flex items-center justify-center gap-2 w-full py-3.5 bg-ivory-dark text-navy/50 rounded-xl text-sm border border-grey-soft">
-                  <VideoIcon className="h-4 w-4" />
-                  Google Meet link will be emailed to you
-                </div>
-              )}
+              {/* Join Google Meet — real URL required, never empty placeholder */}
+              <a
+                href={booking.meetLink || '#'}
+                target={booking.meetLink ? '_blank' : undefined}
+                rel={booking.meetLink ? 'noopener noreferrer' : undefined}
+                onClick={(e) => {
+                  if (!booking.meetLink) {
+                    e.preventDefault()
+                    toast('Google Meet link is being prepared. Please refresh in a moment.', 'info')
+                  }
+                }}
+                className={`flex items-center justify-center gap-2 w-full py-3.5 rounded-xl font-semibold transition-all ${
+                  booking.meetLink
+                    ? 'bg-navy text-white hover:bg-navy-mid hover:shadow-[0_6px_20px_rgba(7,26,53,0.2)] cursor-pointer'
+                    : 'bg-ivory-dark text-navy/50 cursor-not-allowed opacity-60'
+                }`}
+              >
+                <VideoIcon className="h-4 w-4" />
+                {booking.meetLink ? 'Join Google Meet' : 'Preparing Google Meet…'}
+              </a>
 
               {/* Open Google Calendar */}
               <a
@@ -352,9 +355,8 @@ export default function BookingFlow() {
 
           <div className="bg-gold/8 border border-gold/20 rounded-xl p-4 mb-6">
             <p className="text-xs text-navy/70 leading-relaxed">
-              {isFirstSession
-                ? 'Your first session is complimentary. A Google Meet link will be generated and emailed to you.'
-                : 'A Google Calendar event and Google Meet link will be created. You will receive confirmation by email.'}
+              A Google Calendar event and Google Meet conference have been created.
+              You will receive confirmation emails with all session details.
             </p>
           </div>
 
