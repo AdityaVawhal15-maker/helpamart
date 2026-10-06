@@ -531,12 +531,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const realMeetUrl = meetSpace.meetingUri
 
     // 10. Persist real Google Meet URL to the booking
+    // Note: meet_space_name is optional metadata. meet_link is mandatory.
     console.log('[BOOK] updating booking with meet_link')
-    const { error: updateErr } = await db.from('bookings').update({
+    
+    // Try to update with both meet_link and meet_space_name
+    let updateErr = null
+    let updatePayload = {
       meet_link: realMeetUrl,
       meet_space_name: meetSpace.spaceName || null,
       updated_at: new Date().toISOString(),
-    }).eq('id', bookingId)
+    }
+    
+    const { error: primaryUpdateErr } = await db.from('bookings').update(updatePayload).eq('id', bookingId)
+    
+    // If update fails due to missing meet_space_name column (PGRST204), retry with just meet_link
+    if (primaryUpdateErr?.code === 'PGRST204' && primaryUpdateErr?.message?.includes('meet_space_name')) {
+      console.warn('[BOOK] meet_space_name column not found in schema, updating with meet_link only')
+      const { error: fallbackErr } = await db.from('bookings').update({
+        meet_link: realMeetUrl,
+        updated_at: new Date().toISOString(),
+      }).eq('id', bookingId)
+      updateErr = fallbackErr
+    } else {
+      updateErr = primaryUpdateErr
+    }
 
     if (updateErr) {
       // Log the FULL Supabase error — this is the most likely failure point when
