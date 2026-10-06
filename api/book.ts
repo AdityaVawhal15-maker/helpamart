@@ -345,6 +345,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end()
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed.' })
 
+  console.log('[BOOK] request received')
+
+  // ── Preflight: verify all required env vars are present ───────────────────
+  const missingEnv: string[] = []
+  if (!process.env.SUPABASE_URL) missingEnv.push('SUPABASE_URL')
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) missingEnv.push('SUPABASE_SERVICE_ROLE_KEY')
+  if (!process.env.GOOGLE_CLIENT_ID) missingEnv.push('GOOGLE_CLIENT_ID')
+  if (!process.env.GOOGLE_CLIENT_SECRET) missingEnv.push('GOOGLE_CLIENT_SECRET')
+  if (missingEnv.length > 0) {
+    console.error('[BOOK] CRITICAL: missing env vars:', missingEnv.join(', '))
+    return res.status(503).json({
+      error: `Server misconfiguration: missing env vars: ${missingEnv.join(', ')}. Contact support.`,
+    })
+  }
+
   let bookingCreated = false
   const bookingId = crypto.randomUUID()
   let db: ReturnType<typeof adminSupabase> | null = null
@@ -352,6 +367,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     // 1. Authenticate mentee
     const userId = await verifyJwt(req.headers.authorization)
+    console.log('[BOOK] authenticated user:', userId)
     db = adminSupabase()
 
     const { mentorSlug, serviceId, startAt, timezone } = req.body as {
@@ -374,8 +390,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .maybeSingle()
 
     if (mentorErr || !mentorRow) {
+      console.error('[BOOK] mentor lookup failed:', mentorErr?.message, '| slug:', mentorSlug)
       return res.status(404).json({ error: 'This mentor is not currently available.' })
     }
+    console.log('[BOOK] mentor resolved:', mentorRow.id, mentorRow.name)
 
     // 3. Resolve service
     const services: any[] = Array.isArray(mentorRow.services) ? mentorRow.services : []
@@ -386,6 +404,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!service) {
       return res.status(400).json({ error: 'That session type is not available.' })
     }
+    console.log('[BOOK] service resolved:', service.title, '| duration:', service.durationMinutes, 'min')
 
     const durationMin = service.durationMinutes || 30
     const start = new Date(startAt)
@@ -406,6 +425,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const isFirstSession = (prevCount ?? 0) === 0
     const finalPriceCents = isFirstSession ? 0 : (service.priceCents ?? 9900)
     const currency = service.currency || 'INR'
+    console.log('[BOOK] price calculated: isFirstSession=', isFirstSession, '| priceCents=', finalPriceCents)
 
     // 5. Double-booking check
     const { data: clash } = await db
@@ -420,6 +440,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (clash && clash.length > 0) {
       return res.status(409).json({ error: 'This time slot is no longer available. Please choose another time.' })
     }
+    console.log('[BOOK] clash check passed')
 
     // Fetch participant profile info for notifications & emails
     const [{ data: mentorUser }, { data: menteeUser }] = await Promise.all([
@@ -430,6 +451,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const mentorEmail = mentorUser?.email ?? null
     const menteeEmail = menteeUser?.email ?? null
     const menteeName = menteeUser?.full_name || 'Student'
+    console.log('[BOOK] profiles fetched: mentor email present=', !!mentorEmail, '| mentee email present=', !!menteeEmail)
 
     // 6. Check central Google Meet credentials FIRST before finalizing
     const meetCreds = await getCentralMeetCredentials(db)
@@ -440,9 +462,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         details: 'The central HELPAMART Google account must be connected at /admin/meet.',
       })
     }
+    console.log('[BOOK] central Meet credentials resolved')
 
     // 7. Insert booking (provisional)
     const now = new Date().toISOString()
+    console.log('[BOOK] inserting provisional booking:', bookingId)
     const { error: insertErr } = await db.from('bookings').insert({
       id: bookingId,
       mentor_id: mentorRow.id,
@@ -464,11 +488,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
 
     if (insertErr) {
+      console.error('[BOOK] booking INSERT failed:', insertErr.message, '| code:', insertErr.code)
       return res.status(500).json({ error: `Could not create booking: ${insertErr.message}` })
     }
     bookingCreated = true
+    console.log('[BOOK] provisional booking inserted:', bookingId)
 
     // 8. Generate Google access token server-side from refresh token
+    console.log('[BOOK] acquiring Google access token')
     let accessToken: string
     try {
       accessToken = await getGoogleAccessToken(meetCreds)
@@ -481,8 +508,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hint: 'Re-connect Google Meet at /admin/meet',
       })
     }
+    console.log('[BOOK] Google access token acquired')
 
     // 9. Call Google Meet REST API (POST https://meet.googleapis.com/v2/spaces)
+    console.log('[BOOK] calling Google Meet API: POST https://meet.googleapis.com/v2/spaces')
     let meetSpace: { meetingUri: string; spaceName: string; meetingCode: string }
     try {
       meetSpace = await createGoogleMeetSpace(accessToken)
@@ -490,16 +519,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const detail = meetErr?.message || 'unknown meet error'
       console.error('[BOOK] Google Meet space creation FAILED:', detail)
       // Rollback booking immediately — NEVER leave a booking without a real Meet URL
-      await db.from('bookings').delete().eq('id', bookingId)
+      const { error: rollbackErr } = await db.from('bookings').delete().eq('id', bookingId)
+      if (rollbackErr) console.error('[BOOK] rollback delete also failed:', rollbackErr.message)
       return res.status(503).json({
         error: `Google Meet space creation failed: ${detail}`,
         hint: 'Check Vercel logs for the exact Google API error. You may need to reconnect Google Meet at /admin/meet.',
       })
     }
+    console.log('[BOOK] Google Meet API returned meetingUri (exists=true, spaceName=', meetSpace.spaceName, ')')
 
     const realMeetUrl = meetSpace.meetingUri
 
     // 10. Persist real Google Meet URL to the booking
+    console.log('[BOOK] updating booking with meet_link')
     const { error: updateErr } = await db.from('bookings').update({
       meet_link: realMeetUrl,
       meet_space_name: meetSpace.spaceName || null,
@@ -507,15 +539,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }).eq('id', bookingId)
 
     if (updateErr) {
-      console.error('[BOOK] Failed to update booking with real Meet URL:', updateErr.message)
-      // If we cannot save the Meet URL, delete the booking to prevent orphaned/unlinked state
-      await db.from('bookings').delete().eq('id', bookingId)
+      // Log the FULL Supabase error — this is the most likely failure point when
+      // SUPABASE_SERVICE_ROLE_KEY is missing or wrong, causing RLS to block the update.
+      console.error(
+        '[BOOK] CRITICAL: booking UPDATE failed.',
+        '| message:', updateErr.message,
+        '| code:', updateErr.code,
+        '| details:', updateErr.details,
+        '| hint:', updateErr.hint,
+      )
+      // Do NOT silently delete — log the rollback attempt result too
+      const { error: rollbackErr } = await db.from('bookings').delete().eq('id', bookingId)
+      if (rollbackErr) console.error('[BOOK] rollback delete also failed:', rollbackErr.message)
       return res.status(500).json({
-        error: 'Booking could not be finalized. Please try again.',
+        error: `Could not save booking with Meet link: ${updateErr.message} (code: ${updateErr.code})`,
+        hint: 'Check that SUPABASE_SERVICE_ROLE_KEY is set correctly in Vercel env vars (not the anon key).',
       })
     }
+    console.log('[BOOK] booking updated with meet_link — booking ID:', bookingId)
 
-    console.log(`[BOOK] Booking ${bookingId} successfully confirmed with real Meet URL: ${realMeetUrl}`)
+    console.log('[BOOK] booking', bookingId, 'successfully confirmed with real Meet URL')
 
     // 11. Send confirmation emails to BOTH mentee and mentor (Hostinger SMTP)
     sendBookingEmails({
@@ -532,6 +575,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       currency,
       meetUrl: realMeetUrl,
     }).catch(e => console.error('[BOOK] Email dispatch error:', e))
+    console.log('[BOOK] sending emails (async, non-blocking)')
 
     // 12. Create in-app notifications for BOTH mentee and mentor
     try {
@@ -552,11 +596,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })
       }
       await db.from('notifications').insert(notifications)
+      console.log('[BOOK] notifications inserted')
     } catch (notifErr: any) {
       console.warn('[BOOK] In-app notification creation error (table may be pending migration):', notifErr?.message)
     }
 
     // 13. Return HTTP 200 with booking and REAL Meet URL
+    console.log('[BOOK] returning HTTP 200 with booking and real meetUrl')
     return res.status(200).json({
       booking: {
         id: bookingId,
