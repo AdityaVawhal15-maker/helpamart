@@ -271,11 +271,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Get mentor profile
     const { data: mentor } = await db
       .from('mentors')
-      .select('name, email')
+      .select('name, user_id')
       .eq('id', booking.mentor_id)
       .maybeSingle()
 
     const mentorName = mentor?.name || 'Mentor'
+    
+    // Get mentor email from profiles using user_id
+    let mentorEmail = booking.mentor_email
+    if (!mentorEmail && mentor?.user_id) {
+      const { data: mentorProfile } = await db
+        .from('profiles')
+        .select('email')
+        .eq('id', mentor.user_id)
+        .maybeSingle()
+      mentorEmail = mentorProfile?.email
+    }
 
     // Create Google Meet space
     console.log('[FINALIZE] Creating Google Meet space...')
@@ -296,7 +307,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await sendEmails({
       bookingId,
       mentorName,
-      mentorEmail: booking.mentor_email,
+      mentorEmail: mentorEmail || booking.mentor_email,
       menteeName,
       menteeEmail,
       serviceTitle: booking.service_title || 'Mentorship Session',
