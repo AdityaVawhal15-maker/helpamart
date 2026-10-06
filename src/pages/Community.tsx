@@ -5,10 +5,15 @@ import {
   MessageCircle, Plus, Heart, Search, X, ArrowRight,
   Loader2, Send, ChevronRight, Users, TrendingUp
 } from 'lucide-react'
-import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 import { Modal } from '@/components/ui/Modal'
+import {
+  getCommunityPosts,
+  createCommunityPost,
+  toggleCommunityLike,
+  getCommunityStats,
+} from '@/lib/community'
 
 const ease = [0.16, 1, 0.3, 1] as const
 
@@ -20,7 +25,7 @@ export type CommunityPost = {
   author_name: string
   author_id: string
   replyCount: number
-  likesCount: number
+  likes_count: number
   likedByMe: boolean
   category: string
 }
@@ -121,7 +126,7 @@ export function PostCard({ post, onLike }: { post: CommunityPost; onLike?: (id: 
           }`}
         >
           <Heart className={`h-3.5 w-3.5 ${post.likedByMe ? 'fill-maroon text-maroon' : ''}`} />
-          {post.likesCount}
+          {post.likes_count}
         </button>
         <Link
           to={`/community/${post.id}`}
@@ -162,11 +167,19 @@ function CreatePostModal({
     }
     setPosting(true)
     try {
-      const res = await api<{ post: CommunityPost }>('/api/community', {
-        method: 'POST',
-        body: JSON.stringify({ category, title: title.trim(), body: body.trim() }),
+      const post = await createCommunityPost({ category, title: title.trim(), body: body.trim() })
+      onCreated({
+        id: post.id,
+        title: post.title,
+        body: post.body,
+        category: post.category,
+        author_id: post.author_id,
+        author_name: post.author_name,
+        created_at: post.created_at,
+        likes_count: 0,
+        likedByMe: false,
+        replyCount: 0,
       })
-      onCreated(res.post)
       setTitle(''); setBody(''); setCategory('Career')
       onClose()
       toast('Posted to community!', 'success')
@@ -260,7 +273,7 @@ function CreatePostModal({
 function CommunityStats() {
   const [stats, setStats] = useState<{ postCount: number; replyCount: number; userCount: number } | null>(null)
   useEffect(() => {
-    api<{ postCount: number; replyCount: number; userCount: number }>('/api/community/stats')
+    getCommunityStats()
       .then(setStats).catch(() => {})
   }, [])
 
@@ -300,12 +313,25 @@ export default function Community() {
 
   const fetchPosts = useCallback(async (cat: string, q: string) => {
     setLoading(true)
-    const params = new URLSearchParams()
-    if (cat !== 'All') params.set('category', cat)
-    if (q) params.set('search', q)
     try {
-      const data = await api<{ posts: CommunityPost[] }>(`/api/community?${params}`)
-      setPosts(data.posts)
+      const { posts } = await getCommunityPosts({
+        category: cat === 'All' ? undefined : cat,
+        search: q || undefined,
+        limit: 20,
+        offset: 0,
+      })
+      setPosts(posts.map(p => ({
+        id: p.id,
+        title: p.title,
+        body: p.body,
+        category: p.category,
+        author_id: p.author_id,
+        author_name: p.author_name,
+        created_at: p.created_at,
+        likes_count: p.likes_count,
+        likedByMe: p.likedByMe,
+        replyCount: p.replyCount,
+      })))
     } catch {
       setPosts([])
     } finally {
@@ -329,8 +355,8 @@ export default function Community() {
   async function handleLike(postId: string) {
     if (!user) return
     try {
-      const res = await api<{ liked: boolean; likesCount: number }>(`/api/community/${postId}/like`, { method: 'POST' })
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likedByMe: res.liked, likesCount: res.likesCount } : p))
+      const liked = await toggleCommunityLike(postId)
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likedByMe: liked, likes_count: p.likes_count + (liked ? 1 : -1) } : p))
     } catch { /* silent */ }
   }
 

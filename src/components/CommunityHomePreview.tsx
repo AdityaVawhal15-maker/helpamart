@@ -1,13 +1,13 @@
 /**
  * CommunityHomePreview
- * Shows 3 live community posts from the backend on the Home page.
+ * Shows 3 live community posts from Supabase on the Home page.
  * Placed after Stories and before Why HELPAMART.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, useInView } from 'framer-motion'
 import { MessageCircle, Heart, ArrowRight, Users, Plus } from 'lucide-react'
-import { api } from '@/lib/api'
+import { getCommunityPosts } from '@/lib/community'
 import { useAuth } from '@/context/AuthContext'
 import type { CommunityPost } from '@/pages/Community'
 
@@ -91,7 +91,7 @@ function MiniPostCard({ post, index }: { post: CommunityPost; index: number }) {
           <MiniAvatar name={post.author_name} />
           <span className="text-xs font-medium text-navy truncate flex-1">{post.author_name}</span>
           <span className="flex items-center gap-1 text-xs text-grey">
-            <Heart className="h-3 w-3" />{post.likesCount}
+            <Heart className="h-3 w-3" />{post.likes_count}
           </span>
           <span className="flex items-center gap-1 text-xs text-grey">
             <MessageCircle className="h-3 w-3" />{post.replyCount}
@@ -108,13 +108,20 @@ export default function CommunityHomePreview() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api<{ posts: CommunityPost[] }>('/api/community?limit=3')
-      .then(d => {
-        if (Array.isArray(d?.posts)) {
-          setPosts(d.posts.slice(0, 3))
-        } else {
-          setPosts([])
-        }
+    getCommunityPosts({ limit: 3, offset: 0 })
+      .then(({ posts }) => {
+        setPosts(posts.map(p => ({
+          id: p.id,
+          title: p.title,
+          body: p.body,
+          category: p.category,
+          author_id: p.author_id,
+          author_name: p.author_name,
+          created_at: p.created_at,
+          likes_count: p.likes_count,
+          likedByMe: p.likedByMe,
+          replyCount: p.replyCount,
+        })))
       })
       .catch(() => {
         setPosts([])

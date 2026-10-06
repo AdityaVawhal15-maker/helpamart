@@ -1,25 +1,28 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ChevronLeft, Heart, Send, Loader2, MessageCircle } from 'lucide-react'
-import { api } from '@/lib/api'
+import { ChevronLeft, Heart, Send, Loader2, MessageCircle, MoreVertical, Trash2 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
-import { type CommunityPost } from './Community'
+import { Modal } from '@/components/ui/Modal'
+import {
+  getCommunityPost,
+  getCommunityReplies,
+  createCommunityReply,
+  updateCommunityPost,
+  deleteCommunityPost,
+  toggleCommunityLike,
+  updateCommunityReply,
+  deleteCommunityReply,
+  type CommunityPost as DirectCommunityPost,
+  type CommunityReply as DirectCommunityReply,
+} from '@/lib/community'
 
 const ease = [0.16, 1, 0.3, 1] as const
 
-type Reply = {
-  id: string
-  body: string
-  author_name: string
-  author_id: string
-  created_at: string
-}
+type Reply = DirectCommunityReply
 
-type FullPost = CommunityPost & {
-  body: string
-}
+type FullPost = DirectCommunityPost
 
 function timeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime()
@@ -56,24 +59,39 @@ export default function CommunityPostPage() {
   const [replyText, setReplyText] = useState('')
   const [replying, setReplying] = useState(false)
   const [liking, setLiking] = useState(false)
+  const [editingPostId, setEditingPostId] = useState<string | null>(null)
+  const [editPostTitle, setEditPostTitle] = useState('')
+  const [editPostBody, setEditPostBody] = useState('')
+  const [editingReplyId, setEditingReplyId] = useState<string | null>(null)
+  const [editReplyBody, setEditReplyBody] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     if (!id) return
-    api<{ post: FullPost; replies: Reply[] }>(`/api/community/${id}`)
-      .then(d => { setPost(d.post); setReplies(d.replies) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    const load = async () => {
+      try {
+        const [postData, repliesData] = await Promise.all([
+          getCommunityPost(id),
+          getCommunityReplies(id),
+        ])
+        setPost(postData)
+        setReplies(repliesData)
+      } catch {
+        // Silent failure
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
   }, [id])
 
   async function submitReply() {
-    if (!replyText.trim() || !user) return
+    if (!replyText.trim() || !user || !id) return
     setReplying(true)
     try {
-      const res = await api<{ reply: Reply }>(`/api/community/${id}/replies`, {
-        method: 'POST',
-        body: JSON.stringify({ body: replyText.trim() }),
-      })
-      setReplies(prev => [...prev, res.reply])
+      const reply = await createCommunityReply(id, replyText.trim())
+      setReplies(prev => [...prev, reply])
       setPost(prev => prev ? { ...prev, replyCount: prev.replyCount + 1 } : prev)
       setReplyText('')
       toast('Reply posted!', 'success')
@@ -89,10 +107,71 @@ export default function CommunityPostPage() {
     if (liking) return
     setLiking(true)
     try {
-      const res = await api<{ liked: boolean; likesCount: number }>(`/api/community/${post.id}/like`, { method: 'POST' })
-      setPost(prev => prev ? { ...prev, likedByMe: res.liked, likesCount: res.likesCount } : prev)
+      const liked = await toggleCommunityLike(post.id)
+      setPost(prev => prev ? { ...prev, likedByMe: liked, likes_count: prev.likes_count + (liked ? 1 : -1) } : prev)
     } catch { /* silent */ }
     finally { setLiking(false) }
+  }
+
+  async function submitEditPost() {
+    if (!editPostTitle.trim() || !editPostBody.trim() || !post) return
+    setEditing(true)
+    try {
+      const updated = await updateCommunityPost(post.id, {
+        title: editPostTitle.trim(),
+        body: editPostBody.trim(),
+      })
+      setPost(updated)
+      setEditingPostId(null)
+      toast('Post updated!', 'success')
+    } catch (e: unknown) {
+      toast((e as Error).message || 'Could not update post.', 'error')
+    } finally {
+      setEditing(false)
+    }
+  }
+
+  async function submitDeletePost() {
+    if (!post) return
+    setDeleting(true)
+    try {
+      await deleteCommunityPost(post.id)
+      toast('Post deleted.', 'success')
+      window.location.href = '/community'
+    } catch (e: unknown) {
+      toast((e as Error).message || 'Could not delete post.', 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  async function submitEditReply() {
+    if (!editReplyBody.trim() || !editingReplyId) return
+    setEditing(true)
+    try {
+      const updated = await updateCommunityReply(editingReplyId, editReplyBody.trim())
+      setReplies(prev => prev.map(r => r.id === editingReplyId ? updated : r))
+      setEditingReplyId(null)
+      toast('Reply updated!', 'success')
+    } catch (e: unknown) {
+      toast((e as Error).message || 'Could not update reply.', 'error')
+    } finally {
+      setEditing(false)
+    }
+  }
+
+  async function submitDeleteReply(replyId: string) {
+    setDeleting(true)
+    try {
+      await deleteCommunityReply(replyId)
+      setReplies(prev => prev.filter(r => r.id !== replyId))
+      setPost(prev => prev ? { ...prev, replyCount: Math.max(0, prev.replyCount - 1) } : prev)
+      toast('Reply deleted.', 'success')
+    } catch (e: unknown) {
+      toast((e as Error).message || 'Could not delete reply.', 'error')
+    } finally {
+      setDeleting(false)
+    }
   }
 
   if (loading) {
@@ -139,24 +218,35 @@ export default function CommunityPostPage() {
           {/* ── Main post card ── */}
           <div className="bg-white rounded-3xl border border-grey-soft shadow-soft overflow-hidden">
             {/* Category bar */}
-            <div className="bg-navy px-6 py-2.5 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-gold" />
-              <span className="text-[0.625rem] font-bold tracking-[0.2em] text-gold/80 uppercase">{post.category}</span>
+            <div className="bg-navy px-6 py-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-gold" />
+                <span className="text-[0.625rem] font-bold tracking-[0.2em] text-gold/80 uppercase">{post?.category}</span>
+              </div>
+              {user?.id === post?.author_id && (
+                <button
+                  onClick={() => { setEditingPostId(post.id); setEditPostTitle(post.title); setEditPostBody(post.body) }}
+                  className="text-gold/60 hover:text-gold transition-colors"
+                  title="Edit post"
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </button>
+              )}
             </div>
 
             <div className="p-6 md:p-8">
-              <h1 className="text-display-md font-display text-navy mb-5">{post.title}</h1>
+              <h1 className="text-display-md font-display text-navy mb-5">{post?.title}</h1>
 
               {/* Author info */}
               <div className="flex items-center gap-3 mb-6 pb-6 border-b border-grey-soft">
-                <Avatar name={post.author_name} />
+                <Avatar name={post?.author_name || 'User'} />
                 <div>
-                  <p className="font-semibold text-navy text-sm">{post.author_name}</p>
-                  <p className="text-xs text-grey">{timeAgo(post.created_at)}</p>
+                  <p className="font-semibold text-navy text-sm">{post?.author_name}</p>
+                  <p className="text-xs text-grey">{post && timeAgo(post.created_at)}</p>
                 </div>
               </div>
 
-              <p className="text-navy/80 leading-relaxed whitespace-pre-line text-base">{post.body}</p>
+              <p className="text-navy/80 leading-relaxed whitespace-pre-line text-base">{post?.body}</p>
 
               {/* Reaction row */}
               <div className="flex items-center gap-4 mt-8 pt-5 border-t border-grey-soft">
@@ -164,13 +254,13 @@ export default function CommunityPostPage() {
                   onClick={toggleLike}
                   disabled={liking}
                   className={`flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-xl border transition-all ${
-                    post.likedByMe
+                    post?.likedByMe
                       ? 'bg-maroon/8 border-maroon/20 text-maroon'
                       : 'border-grey-soft text-grey hover:border-maroon/30 hover:text-maroon hover:bg-maroon/5'
                   }`}
                 >
-                  <Heart className={`h-4 w-4 ${post.likedByMe ? 'fill-maroon text-maroon' : ''}`} />
-                  {post.likesCount} {post.likesCount === 1 ? 'like' : 'likes'}
+                  <Heart className={`h-4 w-4 ${post?.likedByMe ? 'fill-maroon text-maroon' : ''}`} />
+                  {post?.likes_count} {post?.likes_count === 1 ? 'like' : 'likes'}
                 </button>
                 <span className="flex items-center gap-2 text-sm text-grey">
                   <MessageCircle className="h-4 w-4" />
@@ -194,12 +284,23 @@ export default function CommunityPostPage() {
                   transition={{ duration: 0.4, ease, delay: i * 0.05 }}
                   className="bg-white rounded-2xl border border-grey-soft p-5"
                 >
-                  <div className="flex items-center gap-3 mb-3">
-                    <Avatar name={r.author_name} size={8} />
-                    <div>
-                      <p className="text-sm font-semibold text-navy">{r.author_name}</p>
-                      <p className="text-xs text-grey">{timeAgo(r.created_at)}</p>
+                  <div className="flex items-center gap-3 mb-3 justify-between">
+                    <div className="flex items-center gap-3">
+                      <Avatar name={r.author_name} size={8} />
+                      <div>
+                        <p className="text-sm font-semibold text-navy">{r.author_name}</p>
+                        <p className="text-xs text-grey">{timeAgo(r.created_at)}</p>
+                      </div>
                     </div>
+                    {user?.id === r.author_id && (
+                      <button
+                        onClick={() => { setEditingReplyId(r.id); setEditReplyBody(r.body) }}
+                        className="text-grey hover:text-gold transition-colors"
+                        title="Edit reply"
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
                   <p className="text-navy/80 text-sm leading-relaxed whitespace-pre-line">{r.body}</p>
                 </motion.div>
@@ -247,6 +348,91 @@ export default function CommunityPostPage() {
           )}
         </motion.div>
       </div>
+
+      {/* Edit Post Modal */}
+      <Modal open={!!editingPostId} onClose={() => setEditingPostId(null)} maxWidth="lg">
+        <div className="space-y-4">
+          <div>
+            <label className="field-label">Title</label>
+            <input
+              value={editPostTitle}
+              onChange={e => setEditPostTitle(e.target.value)}
+              className="field-input"
+              maxLength={200}
+            />
+          </div>
+          <div>
+            <label className="field-label">Body</label>
+            <textarea
+              value={editPostBody}
+              onChange={e => setEditPostBody(e.target.value)}
+              className="field-input field-textarea"
+              rows={6}
+            />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button
+              onClick={submitEditPost}
+              disabled={editing || !editPostTitle.trim() || !editPostBody.trim()}
+              className="flex-1 px-4 py-2.5 bg-navy text-white rounded-xl text-sm font-semibold disabled:opacity-50 hover:bg-navy-mid transition-all"
+            >
+              {editing ? 'Saving…' : 'Save Changes'}
+            </button>
+            <button
+              onClick={() => submitDeletePost()}
+              disabled={deleting}
+              className="flex items-center gap-2 px-4 py-2.5 border border-maroon/30 text-maroon rounded-xl text-sm font-semibold disabled:opacity-50 hover:bg-maroon/5 transition-all"
+            >
+              <Trash2 className="h-4 w-4" />
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+            <button
+              onClick={() => setEditingPostId(null)}
+              className="px-4 py-2.5 border border-grey-soft text-grey rounded-xl text-sm font-semibold hover:text-navy transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Reply Modal */}
+      <Modal open={!!editingReplyId} onClose={() => setEditingReplyId(null)} maxWidth="md">
+        <div className="space-y-4">
+          <div>
+            <label className="field-label">Reply</label>
+            <textarea
+              value={editReplyBody}
+              onChange={e => setEditReplyBody(e.target.value)}
+              className="field-input field-textarea"
+              rows={5}
+            />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button
+              onClick={submitEditReply}
+              disabled={editing || !editReplyBody.trim()}
+              className="flex-1 px-4 py-2.5 bg-navy text-white rounded-xl text-sm font-semibold disabled:opacity-50 hover:bg-navy-mid transition-all"
+            >
+              {editing ? 'Saving…' : 'Save Changes'}
+            </button>
+            <button
+              onClick={() => submitDeleteReply(editingReplyId!)}
+              disabled={deleting}
+              className="flex items-center gap-2 px-4 py-2.5 border border-maroon/30 text-maroon rounded-xl text-sm font-semibold disabled:opacity-50 hover:bg-maroon/5 transition-all"
+            >
+              <Trash2 className="h-4 w-4" />
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+            <button
+              onClick={() => setEditingReplyId(null)}
+              className="px-4 py-2.5 border border-grey-soft text-grey rounded-xl text-sm font-semibold hover:text-navy transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

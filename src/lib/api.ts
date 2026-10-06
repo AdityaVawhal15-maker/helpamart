@@ -393,16 +393,8 @@ async function handleClientApiFallback<T>(
   // - POST /api/community/[id]/replies (create reply)
   // - POST /api/community/[id]/like (toggle like)
   // - GET /api/community/stats (community statistics)
-  // If no API endpoint is available (pure SPA), throw error instead of returning mock.
-  if (path.startsWith('/api/community')) {
-    throw new Error(
-      'Community endpoints require Vercel/API server. ' +
-      'This is not a static feature that works in pure SPA mode. ' +
-      'Please ensure API routes are deployed.'
-    )
-  }
-
-  // Generic safe fallback for any unhandled /api/* call in pure SPA mode
+  // Community uses direct Supabase (no API fallback needed)
+  // Other endpoints may return empty fallback
   return {} as unknown as T
 }
 
