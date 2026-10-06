@@ -385,29 +385,21 @@ async function handleClientApiFallback<T>(
   }
 
   // 11. /api/community
+  // Community endpoints are now backed by real Supabase tables (community_posts, community_replies, community_likes)
+  // with proper RLS policies. Do NOT provide mock fallback.
+  // Real endpoints:
+  // - GET/POST /api/community (list, create posts)
+  // - GET /api/community/[id] (single post with replies)
+  // - POST /api/community/[id]/replies (create reply)
+  // - POST /api/community/[id]/like (toggle like)
+  // - GET /api/community/stats (community statistics)
+  // If no API endpoint is available (pure SPA), throw error instead of returning mock.
   if (path.startsWith('/api/community')) {
-    if (path.includes('/stats')) {
-      return { postCount: 0, replyCount: 0, userCount: 0 } as unknown as T
-    }
-    if (path.includes('/like')) {
-      return { liked: true, likesCount: 1 } as unknown as T
-    }
-    if (path.includes('/replies') && method === 'POST') {
-      let body: any = {}
-      try {
-        body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-      } catch {}
-      return {
-        reply: {
-          id: crypto.randomUUID(),
-          authorName: activeUser?.user_metadata?.full_name || 'Community Member',
-          authorAvatar: activeUser?.user_metadata?.avatar_url || null,
-          content: body.content || '',
-          createdAt: new Date().toISOString(),
-        },
-      } as unknown as T
-    }
-    return { posts: [] } as unknown as T
+    throw new Error(
+      'Community endpoints require Vercel/API server. ' +
+      'This is not a static feature that works in pure SPA mode. ' +
+      'Please ensure API routes are deployed.'
+    )
   }
 
   // Generic safe fallback for any unhandled /api/* call in pure SPA mode
