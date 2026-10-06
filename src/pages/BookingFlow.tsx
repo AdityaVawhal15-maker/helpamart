@@ -115,14 +115,63 @@ export default function BookingFlow() {
     if (submitting) return
     if (!user) { navigate(`/login?next=/mentor/${slug}`); return }
 
-    // For free sessions, proceed directly to processing
+    // For free sessions, proceed directly to booking creation
     if (displayPriceCents === 0) {
       proceedToBookingCreation()
       return
     }
 
-    // For paid sessions, show payment UI
-    setStep('payment')
+    // For paid sessions, create provisional booking first
+    setSubmitting(true)
+    setStep('processing')
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData?.session?.access_token
+      if (!token) throw new Error('Session expired. Please sign in again.')
+
+      // Create provisional booking and get payment details
+      const res = await fetch(`${API_BASE}/api/cashfree`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action: 'init-paid-booking',
+          mentorSlug: slug,
+          serviceId: service.id,
+          startAt,
+          timezone,
+        }),
+      })
+
+      const json = await res.json().catch(() => ({}))
+
+      if (!res.ok) {
+        const errData = json as { error?: string }
+        throw new Error(errData.error || 'Failed to initiate payment. Please try again.')
+      }
+
+      const { booking_id, order_id, payment_session_id } = json as { 
+        booking_id: string
+        order_id: string
+        payment_session_id: string
+      }
+
+      // Now show payment UI with real booking and order IDs
+      setStep('payment')
+      // Store the real IDs for payment component
+      sessionStorage.setItem('pendingBookingId', booking_id)
+      sessionStorage.setItem('pendingOrderId', order_id)
+      sessionStorage.setItem('paymentSessionId', payment_session_id)
+    } catch (err: unknown) {
+      const msg = (err as Error).message || 'Failed to initialize payment.'
+      toast(msg, 'error')
+      setStep('confirm')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   async function proceedToBookingCreation() {
@@ -133,25 +182,39 @@ export default function BookingFlow() {
     setStep('processing')
 
     try {
-      // Get Supabase JWT to authenticate the server-side API route
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData?.session?.access_token
       if (!token) throw new Error('Session expired. Please sign in again.')
 
-      // Call the Vercel API route — handles Calendar, Meet, email, idempotency
-      const res = await fetch(`${API_BASE}/api/book`, {
+      const bookingId = sessionStorage.getItem('pendingBookingId')
+
+      if (!bookingId) {
+        throw new Error('Booking not found.')
+      }
+
+      // For free sessions: use /api/book (creates booking + Meet)
+      // For paid sessions: use /api/book-finalize (creates Meet for existing provisional booking)
+      const endpoint = displayPriceCents === 0 ? '/api/book' : '/api/book-finalize'
+
+      const body = displayPriceCents === 0
+        ? {
+            mentorSlug: slug,
+            serviceId: service.id,
+            startAt,
+            timezone,
+          }
+        : {
+            bookingId,
+          }
+
+      const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
           'X-Idempotency-Key': idempotencyKey,
         },
-        body: JSON.stringify({
-          mentorSlug: slug,
-          serviceId: service.id,
-          startAt,
-          timezone,
-        }),
+        body: JSON.stringify(body),
       })
 
       const json = await res.json().catch(() => ({}))
@@ -169,6 +232,11 @@ export default function BookingFlow() {
         throw new Error('Google Meet room could not be created. Please try again.')
       }
 
+      // Clear session storage
+      sessionStorage.removeItem('pendingBookingId')
+      sessionStorage.removeItem('pendingOrderId')
+      sessionStorage.removeItem('paymentSessionId')
+
       setBooking({ ...result.booking, meetLink: meetUrl, meetUrl })
       setStep('done')
     } catch (err: unknown) {
@@ -180,33 +248,41 @@ export default function BookingFlow() {
     }
   }
 
-  function handlePaymentSuccess() {
-    // After payment is verified, proceed to booking creation
-    proceedToBookingCreation()
-  }
 
-  function handlePaymentError(error: string) {
-    toast(error, 'error')
-    // Don't go back to confirm, stay on payment screen with retry option
-  }
-
-  function handlePaymentCancel() {
-    setStep('confirm')
-  }
-
-  function handlePaymentRetry() {
-    // Allow user to try payment again
-    // Component will reset internal state
-    return
-  }
-
-  // ── Payment screen ────────────────────────────────────────────────────────
   if (step === 'payment') {
+    const bookingId = sessionStorage.getItem('pendingBookingId')
+
+    if (!bookingId) {
+      return (
+        <div className="min-h-screen bg-ivory flex items-center justify-center p-6">
+          <div className="max-w-md w-full text-center">
+            <p className="text-red-600">Error: Payment initialization failed.</p>
+            <button
+              onClick={() => {
+                setStep('confirm')
+                sessionStorage.removeItem('pendingBookingId')
+                sessionStorage.removeItem('pendingOrderId')
+                sessionStorage.removeItem('paymentSessionId')
+              }}
+              className="mt-4 text-blue-600 hover:underline"
+            >
+              Go Back
+            </button>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div className="min-h-screen bg-ivory flex items-center justify-center p-6">
         <div className="max-w-md w-full">
           <button
-            onClick={() => setStep('confirm')}
+            onClick={() => {
+              setStep('confirm')
+              sessionStorage.removeItem('pendingBookingId')
+              sessionStorage.removeItem('pendingOrderId')
+              sessionStorage.removeItem('paymentSessionId')
+            }}
             className="flex items-center gap-2 text-sm text-grey hover:text-navy transition-colors mb-8 group"
           >
             <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-0.5" />
@@ -220,16 +296,32 @@ export default function BookingFlow() {
             className="bg-white rounded-3xl shadow-soft p-8"
           >
             <h1 className="text-display-md font-display text-navy mb-1">Complete payment</h1>
-            <p className="text-grey text-sm mb-8">Secure payment via Cashfree</p>
+            <p className="text-grey text-sm mb-8">Secure payment via Cashfree Sandbox</p>
 
             <CashfreeCheckout
-              bookingId={`temp-${Date.now()}`}
+              bookingId={bookingId}
               amount={displayPriceCents}
               currency={displayCurrency}
-              onSuccess={handlePaymentSuccess}
-              onError={handlePaymentError}
-              onCancel={handlePaymentCancel}
-              onRetry={handlePaymentRetry}
+              onSuccess={() => {
+                // Clear session storage
+                sessionStorage.removeItem('pendingBookingId')
+                sessionStorage.removeItem('pendingOrderId')
+                sessionStorage.removeItem('paymentSessionId')
+                // Proceed to booking confirmation and Google Meet
+                proceedToBookingCreation()
+              }}
+              onError={(error: string) => {
+                toast(error, 'error')
+              }}
+              onCancel={() => {
+                setStep('confirm')
+                sessionStorage.removeItem('pendingBookingId')
+                sessionStorage.removeItem('pendingOrderId')
+                sessionStorage.removeItem('paymentSessionId')
+              }}
+              onRetry={() => {
+                // Retry is handled within CashfreeCheckout component
+              }}
             />
 
             <div className="bg-gold/8 border border-gold/20 rounded-xl p-4 mt-6">

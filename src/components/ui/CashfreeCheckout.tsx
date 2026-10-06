@@ -20,6 +20,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
+import { supabase } from '@/lib/supabase'
 import { Button } from './Button'
 
 declare global {
@@ -84,7 +85,7 @@ export function CashfreeCheckout({
     }
   }, [])
 
-  // Create payment order
+  // Create payment order using REAL Supabase session
   const handleCreateOrder = async () => {
     if (loading) return
 
@@ -93,16 +94,17 @@ export function CashfreeCheckout({
     console.log('[CASHFREE] Creating payment order for booking:', bookingId)
 
     try {
-      const token = localStorage.getItem('sb-token')
-      if (!token) {
-        throw new Error('Not authenticated. Please sign in.')
+      // Get Supabase session (correct method)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        throw new Error('Your session has expired. Please sign in again.')
       }
 
       const response = await fetch('/api/cashfree', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           action: 'create-order',
@@ -157,16 +159,17 @@ export function CashfreeCheckout({
     console.log('[CASHFREE] Verifying payment for order:', orderId)
 
     try {
-      const token = localStorage.getItem('sb-token')
-      if (!token) {
-        throw new Error('Not authenticated.')
+      // Get Supabase session (correct method)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        throw new Error('Your session has expired.')
       }
 
       const response = await fetch('/api/cashfree', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           action: 'verify-payment',

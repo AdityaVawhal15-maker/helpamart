@@ -188,6 +188,136 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       bookingId?: string
       amount?: number
       orderId?: string
+      mentorSlug?: string
+      serviceId?: string
+      startAt?: string
+      timezone?: string
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // ACTION: init-paid-booking
+    // Create provisional booking and Cashfree order for paid sessions
+    // ────────────────────────────────────────────────────────────────────────
+    if (action === 'init-paid-booking') {
+      const { mentorSlug, serviceId, startAt: startAtStr, timezone } = req.body
+      if (!mentorSlug || !startAtStr || !timezone) {
+        return res.status(400).json({ error: 'mentorSlug, startAt, and timezone are required.' })
+      }
+
+      console.log('[CASHFREE] init-paid-booking for mentor:', mentorSlug)
+
+      // Resolve mentor
+      const { data: mentorRow, error: mentorErr } = await db
+        .from('mentors')
+        .select('id, name, slug, services, email')
+        .eq('slug', mentorSlug)
+        .eq('status', 'published')
+        .maybeSingle()
+
+      if (mentorErr || !mentorRow) {
+        return res.status(404).json({ error: 'Mentor not found.' })
+      }
+
+      // Resolve service
+      const services = Array.isArray(mentorRow.services) ? mentorRow.services : []
+      const service = serviceId
+        ? services.find((s: any) => s.id === serviceId || s.title === serviceId) ?? services[0]
+        : services[0]
+
+      if (!service) {
+        return res.status(400).json({ error: 'Service not found.' })
+      }
+
+      // Calculate time
+      const start = new Date(startAtStr)
+      const durationMin = service.durationMinutes || 30
+      const end = new Date(start.getTime() + durationMin * 60 * 1000)
+
+      if (isNaN(start.getTime())) {
+        return res.status(400).json({ error: 'Invalid start time.' })
+      }
+
+      // Verify user is NOT first session (returning user)
+      const { count: prevBookings } = await db
+        .from('bookings')
+        .select('id', { count: 'exact', head: true })
+        .eq('mentee_id', userId)
+        .in('status', ['confirmed', 'completed'])
+        .in('payment_status', ['not_required', 'completed'])
+
+      const isFirstSession = (prevBookings ?? 0) === 0
+      if (isFirstSession) {
+        return res.status(400).json({ error: 'First session is free. Use regular booking flow.' })
+      }
+
+      // Create provisional booking (UNPAID STATE)
+      const provisionalBookingId = crypto.randomUUID()
+      const now = new Date().toISOString()
+
+      const { error: bookingErr } = await db.from('bookings').insert({
+        id: provisionalBookingId,
+        mentor_id: mentorRow.id,
+        mentee_id: userId,
+        service_id: service.id,
+        service_title: service.title,
+        start_at: start.toISOString(),
+        end_at: end.toISOString(),
+        timezone,
+        status: 'pending_payment', // Special status: awaiting payment
+        payment_status: 'pending',
+        price_cents: 9900, // ₹99
+        currency: 'INR',
+        payment_provider: 'cashfree',
+        meet_link: null,
+        mentor_email: mentorRow.email || null,
+        student_email: null, // Will be set after payment
+        created_at: now,
+        updated_at: now,
+      })
+
+      if (bookingErr) {
+        console.error('[CASHFREE] Failed to create provisional booking:', bookingErr.message)
+        return res.status(500).json({ error: 'Failed to create booking. Please try again.' })
+      }
+
+      console.log('[CASHFREE] Provisional booking created:', provisionalBookingId)
+
+      // Create Cashfree order
+      try {
+        const { payment_session_id, order_id } = await createPaymentOrder({
+          bookingId: provisionalBookingId,
+          userId,
+          amount: 9900,
+          currency: 'INR',
+          customerEmail: 'user@helpamart.com',
+          customerName: 'HELPAMART User',
+        })
+
+        // Link Cashfree order to provisional booking
+        await db
+          .from('bookings')
+          .update({
+            cashfree_order_id: order_id,
+            updated_at: now,
+          })
+          .eq('id', provisionalBookingId)
+
+        console.log('[CASHFREE] Returning payment details:', {
+          booking_id: provisionalBookingId,
+          order_id,
+          payment_session_id: payment_session_id.slice(0, 20) + '...',
+        })
+
+        return res.status(200).json({
+          booking_id: provisionalBookingId,
+          order_id,
+          payment_session_id,
+        })
+      } catch (err: any) {
+        // Rollback provisional booking on Cashfree failure
+        await db.from('bookings').delete().eq('id', provisionalBookingId)
+        return res.status(503).json({ error: err.message || 'Could not create payment order.' })
+      }
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -296,13 +426,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const paymentStatus = await verifyPaymentStatus(orderId)
 
         if (paymentStatus.payment_status === 'completed') {
-          // Mark booking as confirmed and payment as completed
+          // Payment successful - update booking to confirmed (but NOT generate Meet yet)
           await db
             .from('bookings')
             .update({
               payment_status: 'completed',
               paid_at: new Date().toISOString(),
-              status: 'confirmed', // Ensure booking is confirmed after payment
+              status: 'confirmed', // Now confirmed after payment
               updated_at: new Date().toISOString(),
             })
             .eq('id', bookingId)
@@ -310,11 +440,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           console.log('[CASHFREE] Payment verified and booking confirmed:', bookingId)
           return res.status(200).json({ payment_status: 'completed', success: true })
         } else if (paymentStatus.payment_status === 'failed') {
-          // Mark booking payment as failed
+          // Mark booking payment as failed (do NOT confirm)
           await db
             .from('bookings')
             .update({
               payment_status: 'failed',
+              status: 'cancelled',
               updated_at: new Date().toISOString(),
             })
             .eq('id', bookingId)
@@ -322,7 +453,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           console.log('[CASHFREE] Payment failed:', bookingId, paymentStatus.error)
           return res.status(200).json({ payment_status: 'failed', error: paymentStatus.error })
         } else {
-          // Still pending
+          // Still pending - webhook will handle
           return res.status(200).json({ payment_status: 'pending' })
         }
       } catch (err: any) {
