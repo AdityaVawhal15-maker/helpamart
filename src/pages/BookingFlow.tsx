@@ -142,7 +142,10 @@ export default function BookingFlow() {
       const json = await res.json().catch(() => ({}))
 
       if (!res.ok) {
-        throw new Error((json as { error?: string }).error || 'Booking failed. Please try again.')
+        const errData = json as { error?: string; hint?: string }
+        const msg = errData.error || 'Booking failed. Please try again.'
+        const hint = errData.hint ? ` (${errData.hint})` : ''
+        throw new Error(msg + hint)
       }
 
       const result = json as { booking: BookingResult }

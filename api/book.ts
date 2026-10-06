@@ -132,11 +132,17 @@ async function getGoogleAccessToken(creds: {
 
   if (!tokenRes.ok) {
     const errText = await tokenRes.text()
-    console.error('[BOOK] Google OAuth token refresh failed:', tokenRes.status, errText)
-    throw new Error(`Google token refresh failed (${tokenRes.status})`)
+    console.error('[BOOK] Google OAuth token refresh FAILED:', tokenRes.status, errText)
+    let detail = errText
+    try { detail = JSON.stringify(JSON.parse(errText)) } catch { /* raw text is fine */ }
+    throw new Error(`Google token refresh failed (HTTP ${tokenRes.status}): ${detail}`)
   }
 
-  const tokenData = (await tokenRes.json()) as { access_token?: string }
+  const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string; error_description?: string }
+  if (tokenData.error) {
+    console.error('[BOOK] Google OAuth token error field:', tokenData.error, tokenData.error_description)
+    throw new Error(`Google token error: ${tokenData.error} — ${tokenData.error_description || 'no description'}`)
+  }
   if (!tokenData.access_token) {
     throw new Error('Google token refresh returned no access_token.')
   }
@@ -165,8 +171,18 @@ async function createGoogleMeetSpace(accessToken: string): Promise<{
 
   if (!meetRes.ok) {
     const errText = await meetRes.text()
-    console.error('[BOOK] Google Meet API spaces.create failed:', meetRes.status, errText)
-    throw new Error(`Google Meet API failed with status ${meetRes.status}`)
+    let parsedErr: any = null
+    try { parsedErr = JSON.parse(errText) } catch { /* raw text */ }
+    const googleErrMsg = parsedErr?.error?.message || parsedErr?.message || errText
+    const googleErrStatus = parsedErr?.error?.status || parsedErr?.status || 'UNKNOWN'
+    console.error(
+      `[BOOK] Google Meet API spaces.create FAILED:`,
+      `HTTP ${meetRes.status}`,
+      `status=${googleErrStatus}`,
+      `message=${googleErrMsg}`,
+      `full_body=${errText}`,
+    )
+    throw new Error(`Google Meet API error (HTTP ${meetRes.status} ${googleErrStatus}): ${googleErrMsg}`)
   }
 
   const meetData = (await meetRes.json()) as {
@@ -178,7 +194,7 @@ async function createGoogleMeetSpace(accessToken: string): Promise<{
   const meetingUri = meetData.meetingUri
   if (!meetingUri || typeof meetingUri !== 'string' || !meetingUri.startsWith('https://meet.google.com/')) {
     console.error('[BOOK] Google Meet API returned unexpected body:', JSON.stringify(meetData))
-    throw new Error('Google Meet API did not return a valid meetingUri.')
+    throw new Error(`Google Meet API did not return a valid meetingUri. Body: ${JSON.stringify(meetData)}`)
   }
 
   console.log(`[BOOK] Google Meet space created successfully: ${meetingUri} (space: ${meetData.name || 'none'})`)
@@ -457,10 +473,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       accessToken = await getGoogleAccessToken(meetCreds)
     } catch (tokenErr: any) {
-      console.error('[BOOK] Google access token generation failed:', tokenErr?.message)
+      const detail = tokenErr?.message || 'unknown token error'
+      console.error('[BOOK] Google access token generation FAILED:', detail)
       await db.from('bookings').delete().eq('id', bookingId)
       return res.status(503).json({
-        error: 'Could not authorize Google Meet. Please contact support or re-connect Google Meet at /admin/meet.',
+        error: `Google Meet authorization failed: ${detail}`,
+        hint: 'Re-connect Google Meet at /admin/meet',
       })
     }
 
@@ -469,11 +487,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       meetSpace = await createGoogleMeetSpace(accessToken)
     } catch (meetErr: any) {
-      console.error('[BOOK] Google Meet space creation failed:', meetErr?.message)
+      const detail = meetErr?.message || 'unknown meet error'
+      console.error('[BOOK] Google Meet space creation FAILED:', detail)
       // Rollback booking immediately — NEVER leave a booking without a real Meet URL
       await db.from('bookings').delete().eq('id', bookingId)
       return res.status(503).json({
-        error: 'Could not create your Google Meet space. Please try again or contact support.',
+        error: `Google Meet space creation failed: ${detail}`,
+        hint: 'Check Vercel logs for the exact Google API error. You may need to reconnect Google Meet at /admin/meet.',
       })
     }
 
