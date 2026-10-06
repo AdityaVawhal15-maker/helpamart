@@ -241,13 +241,19 @@ async function sendBookingEmails(opts: {
   priceCents: number
   currency: string
   meetUrl: string
+  isFirstSession: boolean
+  paymentStatus: 'free' | 'paid'
 }) {
   const transport = getTransporter()
   const from = process.env.SMTP_FROM || 'HELPAMART <guidance@helpamart.com>'
   const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
   const endTime = fmt(opts.endAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
-  const priceDisplay = opts.priceCents === 0 ? 'Free (first session)' : `₹${Math.round(opts.priceCents / 100)}`
+  const priceDisplay = opts.priceCents === 0
+    ? 'Free (first HELPAMART session)'
+    : opts.paymentStatus === 'paid'
+    ? `₹${Math.round(opts.priceCents / 100)}`
+    : `₹${Math.round(opts.priceCents / 100)} (payment pending)'`
 
   const meetBlock = `
     <div style="margin:24px 0;padding:20px;background:#f4efe6;border-radius:12px;border-left:4px solid #B77A22;">
@@ -363,12 +369,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let bookingCreated = false
   const bookingId = crypto.randomUUID()
   let db: ReturnType<typeof adminSupabase> | null = null
+  const idempotencyKey = (req.headers['x-idempotency-key'] || req.headers['idempotency-key']) as string | undefined
 
   try {
     // 1. Authenticate mentee
     const userId = await verifyJwt(req.headers.authorization)
     console.log('[BOOK] authenticated user:', userId)
     db = adminSupabase()
+
+    // 1.5. Idempotency check: if request has idempotency key, check if we've already processed it
+    if (idempotencyKey) {
+      console.log('[BOOK] idempotency key present:', idempotencyKey.slice(0, 8) + '...')
+      const { data: existingBooking } = await db
+        .from('bookings')
+        .select('id, status, payment_status, meet_link')
+        .eq('mentee_id', userId)
+        .eq('idempotency_key', idempotencyKey)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (existingBooking) {
+        console.log('[BOOK] idempotent request: returning existing booking', existingBooking.id)
+        return res.status(200).json({
+          booking: {
+            id: existingBooking.id,
+            meetUrl: existingBooking.meet_link,
+            meetLink: existingBooking.meet_link,
+            status: existingBooking.status,
+            isFirstSession: false, // Cannot determine, but idempotent response
+          },
+          note: 'Idempotent response: booking already created',
+        })
+      }
+    }
 
     const { mentorSlug, serviceId, startAt, timezone } = req.body as {
       mentorSlug?: string
@@ -414,18 +448,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Invalid start time.' })
     }
 
-    // 4. Server-side first-session price calculation
-    const { count: prevCount } = await db
+    // 4. Server-side first-session-on-HELPAMART price calculation
+    // IMPORTANT: First session is FREE for ANY user across ALL mentors on HELPAMART platform.
+    // NOT per-mentor. User's FIRST successful booking on HELPAMART is free.
+    const { count: totalSuccessfulBookings } = await db
       .from('bookings')
       .select('id', { count: 'exact', head: true })
       .eq('mentee_id', userId)
-      .eq('mentor_id', mentorRow.id)
       .in('status', ['confirmed', 'completed'])
+      .in('payment_status', ['not_required', 'completed'])
 
-    const isFirstSession = (prevCount ?? 0) === 0
-    const finalPriceCents = isFirstSession ? 0 : (service.priceCents ?? 9900)
+    const isFirstSessionOnHelpamart = (totalSuccessfulBookings ?? 0) === 0
+    const finalPriceCents = isFirstSessionOnHelpamart ? 0 : (service.priceCents ?? 9900)
     const currency = service.currency || 'INR'
-    console.log('[BOOK] price calculated: isFirstSession=', isFirstSession, '| priceCents=', finalPriceCents)
+    console.log('[BOOK] price calculated: isFirstSessionOnHelpamart=', isFirstSessionOnHelpamart, '| priceCents=', finalPriceCents, '| totalPreviousBookings=', totalSuccessfulBookings)
 
     // 5. Double-booking check
     const { data: clash } = await db
@@ -476,10 +512,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       start_at: start.toISOString(),
       end_at: end.toISOString(),
       timezone,
-      status: 'confirmed',
+      status: isFirstSessionOnHelpamart ? 'confirmed' : 'pending',
       payment_status: finalPriceCents === 0 ? 'not_required' : 'pending',
       price_cents: finalPriceCents,
       currency,
+      payment_provider: 'cashfree',
+      idempotency_key: idempotencyKey || undefined,
       meet_link: null, // Will ONLY be set once Google Meet API responds with real URI
       mentor_email: mentorEmail,
       student_email: menteeEmail,
@@ -592,6 +630,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       priceCents: finalPriceCents,
       currency,
       meetUrl: realMeetUrl,
+      isFirstSession: isFirstSessionOnHelpamart,
+      paymentStatus: finalPriceCents === 0 ? 'free' : 'paid',
     }).catch(e => console.error('[BOOK] Email dispatch error:', e))
     console.log('[BOOK] sending emails (async, non-blocking)')
 
@@ -626,10 +666,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         id: bookingId,
         meetUrl: realMeetUrl,
         meetLink: realMeetUrl,
-        status: 'confirmed',
+        status: isFirstSessionOnHelpamart ? 'confirmed' : 'pending',
         priceCents: finalPriceCents,
         currency,
-        isFirstSession,
+        isFirstSession: isFirstSessionOnHelpamart,
         startAt: start.toISOString(),
         endAt: end.toISOString(),
         mentorName: mentorRow.name,

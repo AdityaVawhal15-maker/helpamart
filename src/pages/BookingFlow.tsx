@@ -5,6 +5,7 @@ import { CheckCircle, Calendar, Clock, Globe, ArrowLeft, Loader2, VideoIcon, Ind
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
+import { CashfreeCheckout } from '@/components/ui/CashfreeCheckout'
 import type { MentorService } from '@/types'
 
 type State = {
@@ -26,7 +27,7 @@ type BookingResult = {
   mentorName: string
 }
 
-type Step = 'confirm' | 'processing' | 'done'
+type Step = 'confirm' | 'payment' | 'processing' | 'done'
 
 // Format ₹ or Free
 function formatPrice(priceCents: number, currency = 'INR') {
@@ -53,6 +54,7 @@ export default function BookingFlow() {
   const [isFirstSession, setIsFirstSession] = useState<boolean | null>(null)
   const [checkingPrice, setCheckingPrice] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [idempotencyKey] = useState(() => crypto.randomUUID())
 
   if (!state?.service || !state?.startAt) {
     navigate(`/mentor/${slug}`, { replace: true })
@@ -73,31 +75,29 @@ export default function BookingFlow() {
     return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: timezone })
   }
 
-  // Determine first-session-free status from real booking history
+  // Determine first-session-free status from real booking history (platform-wide)
   useEffect(() => {
-    if (!user || !slug) { setCheckingPrice(false); return }
+    if (!user) { setCheckingPrice(false); return }
     let cancelled = false
 
     async function checkSessionCount() {
       try {
-        const { data: mentorRow } = await supabase
-          .from('mentors')
-          .select('id')
-          .eq('slug', slug!)
-          .maybeSingle()
-
-        if (cancelled) return
-        if (!mentorRow) { setIsFirstSession(true); setCheckingPrice(false); return }
-
+        // Query ALL successful bookings for this user across ALL mentors
+        if (!user) return
         const { count } = await supabase
           .from('bookings')
           .select('id', { count: 'exact', head: true })
-          .eq('mentee_id', user!.id)
-          .eq('mentor_id', mentorRow.id)
+          .eq('mentee_id', user.id)
           .in('status', ['confirmed', 'completed'])
+          .in('payment_status', ['not_required', 'completed'])
 
-        if (!cancelled) setIsFirstSession((count ?? 0) === 0)
-      } catch {
+        if (!cancelled) {
+          const isFirst = (count ?? 0) === 0
+          setIsFirstSession(isFirst)
+          console.log('[BOOKING] Platform-wide first session check: isFirst=', isFirst, 'totalBookings=', count)
+        }
+      } catch (err) {
+        console.error('[BOOKING] Session count error:', err)
         if (!cancelled) setIsFirstSession(true)
       } finally {
         if (!cancelled) setCheckingPrice(false)
@@ -106,12 +106,26 @@ export default function BookingFlow() {
 
     checkSessionCount()
     return () => { cancelled = true }
-  }, [user, slug])
+  }, [user])
 
   const displayPriceCents = isFirstSession === true ? 0 : (service.priceCents ?? 9900)
   const displayCurrency = service.currency || 'INR'
 
   async function confirmBooking() {
+    if (submitting) return
+    if (!user) { navigate(`/login?next=/mentor/${slug}`); return }
+
+    // For free sessions, proceed directly to processing
+    if (displayPriceCents === 0) {
+      proceedToBookingCreation()
+      return
+    }
+
+    // For paid sessions, show payment UI
+    setStep('payment')
+  }
+
+  async function proceedToBookingCreation() {
     if (submitting) return
     if (!user) { navigate(`/login?next=/mentor/${slug}`); return }
 
@@ -130,6 +144,7 @@ export default function BookingFlow() {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
+          'X-Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify({
           mentorSlug: slug,
@@ -163,6 +178,70 @@ export default function BookingFlow() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  function handlePaymentSuccess() {
+    // After payment is verified, proceed to booking creation
+    proceedToBookingCreation()
+  }
+
+  function handlePaymentError(error: string) {
+    toast(error, 'error')
+    // Don't go back to confirm, stay on payment screen with retry option
+  }
+
+  function handlePaymentCancel() {
+    setStep('confirm')
+  }
+
+  function handlePaymentRetry() {
+    // Allow user to try payment again
+    // Component will reset internal state
+    return
+  }
+
+  // ── Payment screen ────────────────────────────────────────────────────────
+  if (step === 'payment') {
+    return (
+      <div className="min-h-screen bg-ivory flex items-center justify-center p-6">
+        <div className="max-w-md w-full">
+          <button
+            onClick={() => setStep('confirm')}
+            className="flex items-center gap-2 text-sm text-grey hover:text-navy transition-colors mb-8 group"
+          >
+            <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-0.5" />
+            Back
+          </button>
+
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+            className="bg-white rounded-3xl shadow-soft p-8"
+          >
+            <h1 className="text-display-md font-display text-navy mb-1">Complete payment</h1>
+            <p className="text-grey text-sm mb-8">Secure payment via Cashfree</p>
+
+            <CashfreeCheckout
+              bookingId={`temp-${Date.now()}`}
+              amount={displayPriceCents}
+              currency={displayCurrency}
+              onSuccess={handlePaymentSuccess}
+              onError={handlePaymentError}
+              onCancel={handlePaymentCancel}
+              onRetry={handlePaymentRetry}
+            />
+
+            <div className="bg-gold/8 border border-gold/20 rounded-xl p-4 mt-6">
+              <p className="text-xs text-navy/70 leading-relaxed">
+                Your booking will be confirmed after successful payment.
+                A Google Meet link will be generated and sent to both you and your mentor.
+              </p>
+            </div>
+          </motion.div>
+        </div>
+      </div>
+    )
   }
 
   // ── Success screen ────────────────────────────────────────────────────────
