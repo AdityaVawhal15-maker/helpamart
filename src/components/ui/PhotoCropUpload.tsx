@@ -15,21 +15,20 @@ interface PhotoCropUploadProps {
   disabled?: boolean
 }
 
-async function getCroppedImg(
-  imageSrc: string,
-  pixelCrop: Area
-): Promise<Blob> {
-  const image = new Image()
-  image.src = imageSrc
-  
+/**
+ * SINGLE SOURCE OF TRUTH FOR CROP GENERATION
+ * Used by both preview and final upload.
+ * croppedAreaPixels are in natural image coordinates from react-easy-crop.
+ */
+async function getCroppedImg(imageSrc: string, croppedAreaPixels: Area): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    image.onload = () => {
+    const img = new Image()
+    img.src = imageSrc
+    img.onload = () => {
       const canvas = document.createElement('canvas')
-      const scaleX = image.naturalWidth / image.width
-      const scaleY = image.naturalHeight / image.height
       
-      // Use the size of the crop area to create a square output
-      const size = Math.min(pixelCrop.width, pixelCrop.height)
+      // Square crop for profile photo
+      const size = Math.min(croppedAreaPixels.width, croppedAreaPixels.height)
       canvas.width = size
       canvas.height = size
       
@@ -39,12 +38,14 @@ async function getCroppedImg(
         return
       }
       
+      // Draw the exact cropped region from the natural image
+      // croppedAreaPixels is already in natural image coordinates
       ctx.drawImage(
-        image,
-        pixelCrop.x * scaleX,
-        pixelCrop.y * scaleY,
-        size * scaleX,
-        size * scaleY,
+        img,
+        croppedAreaPixels.x,
+        croppedAreaPixels.y,
+        size,
+        size,
         0,
         0,
         size,
@@ -60,7 +61,7 @@ async function getCroppedImg(
         0.95
       )
     }
-    image.onerror = () => reject(new Error('Could not load image'))
+    img.onerror = () => reject(new Error('Could not load image'))
   })
 }
 
@@ -112,39 +113,37 @@ export function PhotoCropUpload({
     reader.readAsDataURL(file)
   }
 
-  const handleCropComplete = useCallback((croppedAreaPixels: Area) => {
+  /**
+   * Called by react-easy-crop whenever crop/zoom changes.
+   * croppedAreaPixels is the AUTHORITATIVE crop source.
+   * Update preview using the SAME generation function as final upload.
+   */
+  const handleCropComplete = useCallback((_croppedArea: Area, croppedAreaPixels: Area) => {
     setCroppedAreaPixels(croppedAreaPixels)
     
-    // Update preview canvas in real-time
+    // Update preview canvas in real-time using the EXACT SAME function as final upload
     if (previewCanvasRef.current && previewUrl) {
-      const image = new Image()
-      image.src = previewUrl
-      image.onload = () => {
-        const canvas = previewCanvasRef.current
-        if (!canvas) return
-        
-        const ctx = canvas.getContext('2d')
-        if (!ctx) return
-        
-        const scaleX = image.naturalWidth / image.width
-        const scaleY = image.naturalHeight / image.height
-        
-        const size = Math.min(croppedAreaPixels.width, croppedAreaPixels.height)
-        canvas.width = size
-        canvas.height = size
-        
-        ctx.drawImage(
-          image,
-          croppedAreaPixels.x * scaleX,
-          croppedAreaPixels.y * scaleY,
-          size * scaleX,
-          size * scaleY,
-          0,
-          0,
-          size,
-          size
-        )
-      }
+      getCroppedImg(previewUrl, croppedAreaPixels)
+        .then((blob) => {
+          const canvas = previewCanvasRef.current
+          if (!canvas) return
+          
+          const url = URL.createObjectURL(blob)
+          const img = new Image()
+          img.src = url
+          img.onload = () => {
+            const ctx = canvas.getContext('2d')
+            if (ctx) {
+              canvas.width = img.width
+              canvas.height = img.height
+              ctx.drawImage(img, 0, 0)
+            }
+            URL.revokeObjectURL(url)
+          }
+        })
+        .catch(() => {
+          // Silent fail on preview generation
+        })
     }
   }, [previewUrl])
 
@@ -153,16 +152,13 @@ export function PhotoCropUpload({
 
     setIsProcessing(true)
     try {
-      // Generate cropped image blob using the same pixel crop that was shown in preview
-      const blob = await getCroppedImg(
-        previewUrl,
-        croppedAreaPixels
-      )
+      // Generate cropped image blob using the SAME function as preview
+      const blob = await getCroppedImg(previewUrl, croppedAreaPixels)
 
       // Create a new File object from the blob
       const croppedFile = new File([blob], selectedFile.name, { type: selectedFile.type })
 
-      // Upload the cropped image
+      // Upload the cropped image using existing upload logic
       const userId = localStorage.getItem('supabase-auth-user-id') || 'anon'
       const photoUrl = await uploadProfilePhoto(croppedFile, userId)
 
@@ -278,7 +274,7 @@ export function PhotoCropUpload({
                   {previewUrl && (
                     <div className="flex flex-col gap-3">
                       <p className="text-sm font-medium text-navy">Position Your Photo</p>
-                      <div className="relative w-full bg-ivory-dark rounded-xl overflow-hidden" style={{ aspectRatio: '1' }}>
+                      <div className="relative w-full mx-auto bg-ivory-dark rounded-xl overflow-hidden" style={{ aspectRatio: '1', maxWidth: '420px' }}>
                         <Cropper
                           image={previewUrl}
                           crop={crop}
@@ -299,9 +295,9 @@ export function PhotoCropUpload({
                       </div>
 
                       {/* Zoom Controls */}
-                      <div className="flex items-center gap-3 px-2">
+                      <div className="flex items-center gap-3 px-2 justify-center">
                         <button
-                          onClick={() => setZoom(Math.max(1, zoom - 0.1))}
+                          onClick={() => setZoom(Math.max(1, zoom - 0.2))}
                           disabled={zoom <= 1}
                           className="p-2 text-grey hover:text-navy hover:bg-ivory-light rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Zoom Out"
@@ -309,7 +305,7 @@ export function PhotoCropUpload({
                           <ZoomOut className="h-4 w-4" />
                         </button>
                         
-                        <div className="flex-1 flex items-center gap-2">
+                        <div className="flex-1 flex items-center gap-2 max-w-xs">
                           <input
                             type="range"
                             min="1"
@@ -326,7 +322,7 @@ export function PhotoCropUpload({
                         </div>
                         
                         <button
-                          onClick={() => setZoom(Math.min(3, zoom + 0.1))}
+                          onClick={() => setZoom(Math.min(3, zoom + 0.2))}
                           disabled={zoom >= 3}
                           className="p-2 text-grey hover:text-navy hover:bg-ivory-light rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Zoom In"
@@ -337,7 +333,7 @@ export function PhotoCropUpload({
                     </div>
                   )}
 
-                  {/* Preview */}
+                  {/* Preview - Generated from EXACT SAME crop as final upload */}
                   {previewUrl && (
                     <div className="flex flex-col gap-3">
                       <p className="text-sm font-medium text-navy">Preview</p>
@@ -345,7 +341,7 @@ export function PhotoCropUpload({
                         <div className="w-40 h-40 rounded-2xl bg-ivory-dark border-2 border-grey-soft overflow-hidden flex items-center justify-center">
                           <canvas
                             ref={previewCanvasRef}
-                            className="w-full h-full object-cover"
+                            className="w-full h-full"
                           />
                         </div>
                       </div>
@@ -389,4 +385,3 @@ export function PhotoCropUpload({
     </>
   )
 }
-
