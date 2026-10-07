@@ -69,34 +69,42 @@ export function PhotoCropUpload({
 
     setIsProcessing(true)
     try {
-      // Get the crop dimensions
       const img = imgRef.current
-      const scaleX = img.naturalWidth / img.width
-      const scaleY = img.naturalHeight / img.height
+      const naturalWidth = img.naturalWidth
+      const naturalHeight = img.naturalHeight
 
-      const x = (crop.x / 100) * img.width * scaleX
-      const y = (crop.y / 100) * img.height * scaleY
-      const width = (crop.width / 100) * img.width * scaleX
-      const height = (crop.height / 100) * img.height * scaleY
+      // Convert crop coordinates to natural image pixels
+      // crop values are in pixels (crop.unit is 'px' after onLoad)
+      let cropX = crop.x
+      let cropY = crop.y
+      let cropWidth = crop.width
+      let cropHeight = crop.height
 
-      // Create canvas and draw cropped image
+      // If crop is still in percentage mode (shouldn't happen after onLoad, but be safe)
+      if (crop.unit === '%') {
+        cropX = (crop.x / 100) * naturalWidth
+        cropY = (crop.y / 100) * naturalHeight
+        cropWidth = (crop.width / 100) * naturalWidth
+        cropHeight = (crop.height / 100) * naturalHeight
+      }
+
+      // Ensure crop is within natural image bounds
+      cropX = Math.max(0, Math.min(cropX, naturalWidth))
+      cropY = Math.max(0, Math.min(cropY, naturalHeight))
+      cropWidth = Math.max(1, Math.min(cropWidth, naturalWidth - cropX))
+      cropHeight = Math.max(1, Math.min(cropHeight, naturalHeight - cropY))
+
+      // Create canvas with natural image dimensions (square for profile)
+      const size = Math.min(cropWidth, cropHeight)
       const canvas = document.createElement('canvas')
-      canvas.width = width
-      canvas.height = height
+      canvas.width = size
+      canvas.height = size
+
       const ctx = canvas.getContext('2d')
       if (!ctx) throw new Error('Could not get canvas context')
 
-      ctx.drawImage(
-        img,
-        x,
-        y,
-        width,
-        height,
-        0,
-        0,
-        width,
-        height
-      )
+      // Draw the cropped region from the natural image
+      ctx.drawImage(img, cropX, cropY, size, size, 0, 0, size, size)
 
       // Convert canvas to blob
       const blob = await new Promise<Blob>((resolve, reject) => {
@@ -260,19 +268,37 @@ export function PhotoCropUpload({
                           ref={(canvas) => {
                             if (!canvas || !imgRef.current) return
                             const img = imgRef.current
-                            const scaleX = img.naturalWidth / img.width
-                            const scaleY = img.naturalHeight / img.height
+                            const naturalWidth = img.naturalWidth
+                            const naturalHeight = img.naturalHeight
 
-                            const x = (crop.x / 100) * img.width * scaleX
-                            const y = (crop.y / 100) * img.height * scaleY
-                            const width = (crop.width / 100) * img.width * scaleX
-                            const height = (crop.height / 100) * img.height * scaleY
+                            // Convert crop coordinates to natural image pixels
+                            let cropX = crop.x
+                            let cropY = crop.y
+                            let cropWidth = crop.width
+                            let cropHeight = crop.height
 
-                            canvas.width = width
-                            canvas.height = height
+                            // If crop is still in percentage mode
+                            if (crop.unit === '%') {
+                              cropX = (crop.x / 100) * naturalWidth
+                              cropY = (crop.y / 100) * naturalHeight
+                              cropWidth = (crop.width / 100) * naturalWidth
+                              cropHeight = (crop.height / 100) * naturalHeight
+                            }
+
+                            // Ensure crop is within bounds
+                            cropX = Math.max(0, Math.min(cropX, naturalWidth))
+                            cropY = Math.max(0, Math.min(cropY, naturalHeight))
+                            cropWidth = Math.max(1, Math.min(cropWidth, naturalWidth - cropX))
+                            cropHeight = Math.max(1, Math.min(cropHeight, naturalHeight - cropY))
+
+                            // Square crop for profile
+                            const size = Math.min(cropWidth, cropHeight)
+                            canvas.width = size
+                            canvas.height = size
+
                             const ctx = canvas.getContext('2d')
                             if (ctx) {
-                              ctx.drawImage(img, x, y, width, height, 0, 0, width, height)
+                              ctx.drawImage(img, cropX, cropY, size, size, 0, 0, size, size)
                             }
                           }}
                           className="w-full h-full object-cover"

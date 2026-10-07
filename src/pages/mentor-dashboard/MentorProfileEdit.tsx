@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
+import { PhotoCropUpload } from '@/components/ui/PhotoCropUpload'
 import { CATEGORIES } from '@/data/taxonomy'
 import { getMentorProfile, updateMentorProfile } from '@/lib/mentor'
 
@@ -109,18 +110,18 @@ export default function MentorProfileEdit() {
             </div>
           ) : (
             <div className="bg-white rounded-2xl border border-grey-soft p-6 space-y-6">
-            {/* Photo */}
-            <div className="flex items-center gap-4">
-              <div className="w-20 h-20 rounded-2xl overflow-hidden shrink-0 bg-ivory-dark">
-                {form.photoUrl
-                  ? <img src={form.photoUrl} className="w-full h-full object-cover" alt="" />
-                  : <div className="w-full h-full flex items-center justify-center text-grey text-3xl font-display">{form.fullName?.[0] || '?'}</div>
-                }
-              </div>
-              <div>
-                <label className="field-label">Photo URL</label>
-                <input value={form.photoUrl} onChange={e => set('photoUrl', e.target.value)} className="field-input text-sm" placeholder="https://…" />
-              </div>
+            {/* Photo - Using PhotoCropUpload component */}
+            <div>
+              <label className="field-label">Profile Photo</label>
+              <PhotoCropUpload
+                currentPhotoUrl={form.photoUrl}
+                photoInitials={form.fullName?.[0]?.toUpperCase() || '?'}
+                onPhotoUploadSuccess={(url) => {
+                  set('photoUrl', url)
+                  toast('Photo updated.', 'success')
+                }}
+                disabled={saving}
+              />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

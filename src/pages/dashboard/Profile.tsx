@@ -67,9 +67,15 @@ export default function DashboardProfile() {
               <PhotoCropUpload
                 currentPhotoUrl={photoUrl}
                 photoInitials={name?.[0]?.toUpperCase() || '?'}
-                onPhotoUploadSuccess={(url) => {
+                onPhotoUploadSuccess={async (url) => {
                   setPhotoUrl(url)
-                  toast('Photo updated.', 'success')
+                  try {
+                    await updateUserProfile({ photoUrl: url })
+                    toast('Photo updated.', 'success')
+                  } catch (error) {
+                    console.error('[Profile] Failed to update profile with new photo:', error)
+                    toast('Photo uploaded but failed to save profile.', 'error')
+                  }
                 }}
                 disabled={saving}
               />
