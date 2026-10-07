@@ -5,7 +5,7 @@ import { CheckCircle, Calendar, Clock, Globe, ArrowLeft, Loader2, VideoIcon, Ind
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
-import { RazorpayCheckout } from '@/components/ui/RazorpayCheckout'
+import { CashfreeCheckout } from '@/components/ui/CashfreeCheckout'
 import type { MentorService } from '@/types'
 
 type State = {
@@ -161,17 +161,17 @@ export default function BookingFlow() {
         return
       }
 
-      // FLOW B: PAID SESSION (RAZORPAY)
-      console.log('[BOOKING] Paid session flow - calling /api/razorpay to init order')
+      // FLOW B: PAID SESSION (CASHFREE)
+      console.log('[BOOKING] Paid session flow - calling /api/cashfree to init order')
       
-      const res = await fetch(`${API_BASE}/api/razorpay`, {
+      const res = await fetch(`${API_BASE}/api/cashfree`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
-          action: 'init-order',
+          action: 'init-paid-booking',
           mentorSlug: slug,
           serviceId: service.id,
           startAt,
@@ -186,18 +186,18 @@ export default function BookingFlow() {
         throw new Error(errData.error || 'Failed to initiate payment. Please try again.')
       }
 
-      const { booking_id, razorpay_order_id, razorpay_key_id } = json as {
+      const { booking_id, payment_session_id, order_id } = json as {
         booking_id: string
-        razorpay_order_id: string
-        razorpay_key_id: string
+        payment_session_id: string
+        order_id: string
       }
 
-      console.log('[BOOKING] Razorpay order initialized:', razorpay_order_id)
+      console.log('[BOOKING] Cashfree order initialized:', order_id)
 
-      // Store for Razorpay component
+      // Store for Cashfree component
       sessionStorage.setItem('pendingBookingId', booking_id)
-      sessionStorage.setItem('razorpayOrderId', razorpay_order_id)
-      sessionStorage.setItem('razorpayKeyId', razorpay_key_id)
+      sessionStorage.setItem('cashfreeOrderId', order_id)
+      sessionStorage.setItem('cashfreePaymentSessionId', payment_session_id)
 
       setStep('payment')
     } catch (err: unknown) {
@@ -222,8 +222,8 @@ export default function BookingFlow() {
               onClick={() => {
                 setStep('confirm')
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('razorpayOrderId')
-                sessionStorage.removeItem('razorpayKeyId')
+                sessionStorage.removeItem('cashfreeOrderId')
+                sessionStorage.removeItem('cashfreePaymentSessionId')
               }}
               className="mt-4 text-blue-600 hover:underline"
             >
@@ -241,8 +241,8 @@ export default function BookingFlow() {
             onClick={() => {
               setStep('confirm')
               sessionStorage.removeItem('pendingBookingId')
-              sessionStorage.removeItem('razorpayOrderId')
-              sessionStorage.removeItem('razorpayKeyId')
+              sessionStorage.removeItem('cashfreeOrderId')
+              sessionStorage.removeItem('cashfreePaymentSessionId')
             }}
             className="flex items-center gap-2 text-sm text-grey hover:text-navy transition-colors mb-8 group"
           >
@@ -257,19 +257,19 @@ export default function BookingFlow() {
             className="bg-white rounded-3xl shadow-soft p-8"
           >
             <h1 className="text-display-md font-display text-navy mb-1">Complete payment</h1>
-            <p className="text-grey text-sm mb-8">Secure payment via Razorpay</p>
+            <p className="text-grey text-sm mb-8">Secure payment via Cashfree</p>
 
-            <RazorpayCheckout
+            <CashfreeCheckout
               bookingId={bookingId}
-              razorpayOrderId={sessionStorage.getItem('razorpayOrderId') || ''}
-              razorpayKeyId={sessionStorage.getItem('razorpayKeyId') || ''}
+              orderId={sessionStorage.getItem('cashfreeOrderId') || ''}
+              paymentSessionId={sessionStorage.getItem('cashfreePaymentSessionId') || ''}
               amount={displayPriceCents}
               currency={displayCurrency}
               onSuccess={async () => {
                 // Clear session storage
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('razorpayOrderId')
-                sessionStorage.removeItem('razorpayKeyId')
+                sessionStorage.removeItem('cashfreeOrderId')
+                sessionStorage.removeItem('cashfreePaymentSessionId')
                 
                 // Fetch the completed booking
                 try {
@@ -303,14 +303,14 @@ export default function BookingFlow() {
               onCancel={() => {
                 setStep('confirm')
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('razorpayOrderId')
-                sessionStorage.removeItem('razorpayKeyId')
+                sessionStorage.removeItem('cashfreeOrderId')
+                sessionStorage.removeItem('cashfreePaymentSessionId')
               }}
               onRetry={() => {
                 setStep('confirm')
                 sessionStorage.removeItem('pendingBookingId')
-                sessionStorage.removeItem('razorpayOrderId')
-                sessionStorage.removeItem('razorpayKeyId')
+                sessionStorage.removeItem('cashfreeOrderId')
+                sessionStorage.removeItem('cashfreePaymentSessionId')
               }}
             />
 
