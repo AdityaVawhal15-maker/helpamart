@@ -1,15 +1,15 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  User, Star, Briefcase, Clock, Settings, Eye, Upload, Plus, Trash2,
+  User, Star, Briefcase, Clock, Settings, Eye, Plus, Trash2,
   CheckCircle, CheckCircle2, ArrowRight, ArrowLeft, Loader2, Copy, Globe,
   Sparkles, MapPin, ExternalLink, Linkedin, Check
 } from 'lucide-react'
 import { api } from '@/lib/api'
-import { uploadProfilePhoto } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
+import { PhotoCropUpload } from '@/components/ui/PhotoCropUpload'
 
 const ease = [0.16, 1, 0.3, 1] as const
 
@@ -610,16 +610,12 @@ function StepIntroduce({
   intro: string; setIntro: (v: string) => void
   languages: string[]; setLanguages: (v: string[]) => void
 }) {
-  const fileRef = useRef<HTMLInputElement>(null)
-  const [uploading, setUploading] = useState(false)
-  const { toast } = useToast()
-  const { user } = useAuth()
-
-  // Custom "Other" language handling
   const [otherActive, setOtherActive] = useState(false)
   const [customInput, setCustomInput] = useState('')
   const [inputError, setInputError] = useState('')
+  const { toast } = useToast()
 
+  // Custom "Other" language handling
   const handleToggleOther = () => {
     if (otherActive) {
       setOtherActive(false)
@@ -655,22 +651,6 @@ function StepIntroduce({
     setInputError('')
   }
 
-  async function uploadPhoto(file: File) {
-    setUploading(true)
-    try {
-      // Use Supabase Storage for permanent cross-session URLs.
-      // Falls back to a blob URL (session-only) if Storage is unavailable.
-      const userId = user?.id || `anon-${Date.now()}`
-      const url = await uploadProfilePhoto(file, userId)
-      setPhotoUrl(url)
-      toast('Photo uploaded!', 'success')
-    } catch (e: unknown) {
-      toast((e as Error).message || 'Upload failed', 'error')
-    } finally {
-      setUploading(false)
-    }
-  }
-
   return (
     <div className="space-y-6">
       <StepHeader
@@ -679,40 +659,17 @@ function StepIntroduce({
         sub="Your photo and bio are the first thing mentees see."
       />
 
-      {/* Profile Photo */}
+      {/* Profile Photo - Using PhotoCropUpload Component */}
       <div className="bg-white p-5 rounded-2xl border border-grey-soft shadow-xs">
         <label className="field-label mb-2">Profile Photo</label>
-        <div className="flex items-center gap-4">
-          <div className="w-20 h-20 rounded-2xl bg-ivory-dark overflow-hidden shrink-0 border border-grey-soft flex items-center justify-center">
-            {photoUrl ? (
-              <img src={photoUrl} className="w-full h-full object-cover" alt="Profile" />
-            ) : (
-              <div className="text-grey-mid text-3xl font-display">{fullName?.[0] || '?'}</div>
-            )}
-          </div>
-          <div>
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              className="flex items-center gap-2 px-4 py-2 border border-grey-soft rounded-xl text-sm text-navy font-medium hover:border-gold/40 hover:bg-ivory-light transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              {uploading ? 'Uploading…' : 'Upload Photo'}
-            </button>
-            <p className="text-xs text-grey mt-1.5">JPG, PNG or WebP · Max 4MB</p>
-          </div>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            className="hidden"
-            onChange={e => {
-              const f = e.target.files?.[0]
-              if (f) uploadPhoto(f)
-            }}
-          />
-        </div>
+        <PhotoCropUpload
+          currentPhotoUrl={photoUrl}
+          photoInitials={fullName?.[0]?.toUpperCase() || '?'}
+          onPhotoUploadSuccess={(url) => {
+            setPhotoUrl(url)
+            toast('Photo uploaded!', 'success')
+          }}
+        />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

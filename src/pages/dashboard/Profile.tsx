@@ -5,17 +5,20 @@ import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
+import { PhotoCropUpload } from '@/components/ui/PhotoCropUpload'
 
 export default function DashboardProfile() {
   const { user, loading, refresh, updateUserProfile } = useAuth()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [name, setName] = useState(user?.name || '')
+  const [photoUrl, setPhotoUrl] = useState(user?.photoUrl || '')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (user?.name) setName(user.name)
-  }, [user?.name])
+    if (user?.photoUrl) setPhotoUrl(user.photoUrl)
+  }, [user?.name, user?.photoUrl])
 
   useEffect(() => {
     if (!loading && !user) navigate('/login?next=/dashboard/profile')
@@ -28,9 +31,9 @@ export default function DashboardProfile() {
     }
     setSaving(true)
     try {
-      await updateUserProfile({ name: name.trim() })
+      await updateUserProfile({ name: name.trim(), photoUrl: photoUrl || undefined })
       try {
-        await api('/api/users/me', { method: 'PUT', body: JSON.stringify({ name: name.trim() }) })
+        await api('/api/users/me', { method: 'PUT', body: JSON.stringify({ name: name.trim(), photoUrl: photoUrl || null }) })
       } catch {}
       await refresh()
       toast('Profile updated.', 'success')
@@ -58,15 +61,34 @@ export default function DashboardProfile() {
           <h1 className="text-display-md font-display text-navy mb-8">Profile Settings</h1>
 
           <div className="bg-white rounded-2xl border border-grey-soft p-6 space-y-5">
+            {/* Profile Photo Section */}
+            <div>
+              <label className="field-label">Profile Photo</label>
+              <PhotoCropUpload
+                currentPhotoUrl={photoUrl}
+                photoInitials={name?.[0]?.toUpperCase() || '?'}
+                onPhotoUploadSuccess={(url) => {
+                  setPhotoUrl(url)
+                  toast('Photo updated.', 'success')
+                }}
+                disabled={saving}
+              />
+            </div>
+
+            {/* Full Name */}
             <div>
               <label className="field-label">Full Name</label>
               <input value={name} onChange={e => setName(e.target.value)} className="field-input" placeholder="Your full name" />
             </div>
+
+            {/* Email */}
             <div>
               <label className="field-label">Email</label>
               <input value={user.email || ''} readOnly className="field-input opacity-60 cursor-not-allowed" />
               <p className="text-xs text-grey mt-1">Email cannot be changed here.</p>
             </div>
+
+            {/* Save Button */}
             <button
               onClick={save}
               disabled={saving}
