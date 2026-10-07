@@ -67,6 +67,10 @@ const BASE_CATEGORIES = [
   'Education', 'Study Abroad', 'Finance', 'Leadership', 'Personal Growth', 'Interview Preparation',
   'College', 'Skills', 'Life', 'Research', 'Product Management', 'Entrepreneurship',
   'Content & Writing', 'Data Science', 'Cybersecurity', 'Cloud & DevOps', 'Marketing', 'Public Speaking',
+  // ──────── Student & Aspirant Categories ────────
+  'JEE', 'NEET', 'IIT', 'NDA', 'Medical',
+  'Class 9', 'Class 10', 'Class 11', 'Class 12',
+  'Other Entrance Exams', 'Study Guidance', 'Career Guidance', 'Mental Health',
 ]
 
 const BASE_SKILLS = [

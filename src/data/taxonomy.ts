@@ -15,6 +15,20 @@ export const CATEGORIES = [
   'College',
   'Skills',
   'Life',
+  // ──────── Student & Aspirant Categories ────────
+  'JEE',
+  'NEET',
+  'IIT',
+  'NDA',
+  'Medical',
+  'Class 9',
+  'Class 10',
+  'Class 11',
+  'Class 12',
+  'Other Entrance Exams',
+  'Study Guidance',
+  'Career Guidance',
+  'Mental Health',
 ]
 
 export const HERO_PILLS = [
@@ -25,4 +39,6 @@ export const HERO_PILLS = [
   'Business',
   'Community',
   'Study Abroad',
+  'JEE',
+  'NEET',
 ]
