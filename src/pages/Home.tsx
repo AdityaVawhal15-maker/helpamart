@@ -37,6 +37,8 @@ const PILL_POSITIONS = [
   { top: '32%', right: '-14%', delay: 1.5, duration: 6.2 },
   { top: '55%', right: '-6%', delay: 1.7, duration: 5.3 },
   { top: '70%', left: '-8%', delay: 1.8, duration: 5.7 },
+  { top: '20%', left: '-12%', delay: 1.9, duration: 5.9 },  // JEE
+  { top: '65%', right: '-10%', delay: 2.0, duration: 6.1 }, // NEET
 ]
 
 const BENEFITS = [
