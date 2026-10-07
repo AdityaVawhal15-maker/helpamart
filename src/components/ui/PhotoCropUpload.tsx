@@ -1,12 +1,11 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Upload, X, CheckCircle2 } from 'lucide-react'
-import ReactCrop from 'react-image-crop'
-import type { Crop } from 'react-image-crop'
+import { Upload, X, CheckCircle2, ZoomIn, ZoomOut } from 'lucide-react'
+import Cropper from 'react-easy-crop'
+import type { Area, Point } from 'react-easy-crop'
 import { uploadProfilePhoto } from '@/lib/supabase'
 import { useToast } from './Toast'
-// CSS for react-image-crop
-import 'react-image-crop/dist/ReactCrop.css'
+import 'react-easy-crop/react-easy-crop.css'
 
 interface PhotoCropUploadProps {
   currentPhotoUrl: string | null
@@ -14,6 +13,55 @@ interface PhotoCropUploadProps {
   onPhotoUploadSuccess: (photoUrl: string) => void
   uploading?: boolean
   disabled?: boolean
+}
+
+async function getCroppedImg(
+  imageSrc: string,
+  pixelCrop: Area
+): Promise<Blob> {
+  const image = new Image()
+  image.src = imageSrc
+  
+  return new Promise((resolve, reject) => {
+    image.onload = () => {
+      const canvas = document.createElement('canvas')
+      const scaleX = image.naturalWidth / image.width
+      const scaleY = image.naturalHeight / image.height
+      
+      // Use the size of the crop area to create a square output
+      const size = Math.min(pixelCrop.width, pixelCrop.height)
+      canvas.width = size
+      canvas.height = size
+      
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('Could not get canvas context'))
+        return
+      }
+      
+      ctx.drawImage(
+        image,
+        pixelCrop.x * scaleX,
+        pixelCrop.y * scaleY,
+        size * scaleX,
+        size * scaleY,
+        0,
+        0,
+        size,
+        size
+      )
+      
+      canvas.toBlob(
+        (blob) => {
+          if (blob) resolve(blob)
+          else reject(new Error('Could not create image blob'))
+        },
+        'image/jpeg',
+        0.95
+      )
+    }
+    image.onerror = () => reject(new Error('Could not load image'))
+  })
 }
 
 export function PhotoCropUpload({
@@ -24,19 +72,15 @@ export function PhotoCropUpload({
   disabled = false,
 }: PhotoCropUploadProps) {
   const fileRef = useRef<HTMLInputElement>(null)
-  const imgRef = useRef<HTMLImageElement>(null)
+  const previewCanvasRef = useRef<HTMLCanvasElement>(null)
   const { toast } = useToast()
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [showCropModal, setShowCropModal] = useState(false)
-  const [crop, setCrop] = useState<Crop>({
-    unit: '%',
-    width: 90,
-    height: 90,
-    x: 5,
-    y: 5,
-  })
+  const [crop, setCrop] = useState<Point>({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -60,63 +104,60 @@ export function PhotoCropUpload({
     reader.onload = (e) => {
       setPreviewUrl(e.target?.result as string)
       setShowCropModal(true)
+      // Reset crop state for new image
+      setCrop({ x: 0, y: 0 })
+      setZoom(1)
+      setCroppedAreaPixels(null)
     }
     reader.readAsDataURL(file)
   }
 
+  const handleCropComplete = useCallback((croppedAreaPixels: Area) => {
+    setCroppedAreaPixels(croppedAreaPixels)
+    
+    // Update preview canvas in real-time
+    if (previewCanvasRef.current && previewUrl) {
+      const image = new Image()
+      image.src = previewUrl
+      image.onload = () => {
+        const canvas = previewCanvasRef.current
+        if (!canvas) return
+        
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        
+        const scaleX = image.naturalWidth / image.width
+        const scaleY = image.naturalHeight / image.height
+        
+        const size = Math.min(croppedAreaPixels.width, croppedAreaPixels.height)
+        canvas.width = size
+        canvas.height = size
+        
+        ctx.drawImage(
+          image,
+          croppedAreaPixels.x * scaleX,
+          croppedAreaPixels.y * scaleY,
+          size * scaleX,
+          size * scaleY,
+          0,
+          0,
+          size,
+          size
+        )
+      }
+    }
+  }, [previewUrl])
+
   const handleCropConfirm = async () => {
-    if (!imgRef.current || !selectedFile || !previewUrl) return
+    if (!selectedFile || !previewUrl || !croppedAreaPixels) return
 
     setIsProcessing(true)
     try {
-      const img = imgRef.current
-      const naturalWidth = img.naturalWidth
-      const naturalHeight = img.naturalHeight
-
-      // Convert crop coordinates to natural image pixels
-      // crop values are in pixels (crop.unit is 'px' after onLoad)
-      let cropX = crop.x
-      let cropY = crop.y
-      let cropWidth = crop.width
-      let cropHeight = crop.height
-
-      // If crop is still in percentage mode (shouldn't happen after onLoad, but be safe)
-      if (crop.unit === '%') {
-        cropX = (crop.x / 100) * naturalWidth
-        cropY = (crop.y / 100) * naturalHeight
-        cropWidth = (crop.width / 100) * naturalWidth
-        cropHeight = (crop.height / 100) * naturalHeight
-      }
-
-      // Ensure crop is within natural image bounds
-      cropX = Math.max(0, Math.min(cropX, naturalWidth))
-      cropY = Math.max(0, Math.min(cropY, naturalHeight))
-      cropWidth = Math.max(1, Math.min(cropWidth, naturalWidth - cropX))
-      cropHeight = Math.max(1, Math.min(cropHeight, naturalHeight - cropY))
-
-      // Create canvas with natural image dimensions (square for profile)
-      const size = Math.min(cropWidth, cropHeight)
-      const canvas = document.createElement('canvas')
-      canvas.width = size
-      canvas.height = size
-
-      const ctx = canvas.getContext('2d')
-      if (!ctx) throw new Error('Could not get canvas context')
-
-      // Draw the cropped region from the natural image
-      ctx.drawImage(img, cropX, cropY, size, size, 0, 0, size, size)
-
-      // Convert canvas to blob
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob(
-          (blob) => {
-            if (blob) resolve(blob)
-            else reject(new Error('Could not create image blob'))
-          },
-          selectedFile.type || 'image/jpeg',
-          0.95
-        )
-      })
+      // Generate cropped image blob using the same pixel crop that was shown in preview
+      const blob = await getCroppedImg(
+        previewUrl,
+        croppedAreaPixels
+      )
 
       // Create a new File object from the blob
       const croppedFile = new File([blob], selectedFile.name, { type: selectedFile.type })
@@ -132,6 +173,9 @@ export function PhotoCropUpload({
       setShowCropModal(false)
       setSelectedFile(null)
       setPreviewUrl(null)
+      setCrop({ x: 0, y: 0 })
+      setZoom(1)
+      setCroppedAreaPixels(null)
       toast('Photo updated successfully!', 'success')
     } catch (error) {
       console.error('[PhotoCropUpload] crop/upload error:', error)
@@ -145,6 +189,9 @@ export function PhotoCropUpload({
     setShowCropModal(false)
     setSelectedFile(null)
     setPreviewUrl(null)
+    setCrop({ x: 0, y: 0 })
+    setZoom(1)
+    setCroppedAreaPixels(null)
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -209,10 +256,11 @@ export function PhotoCropUpload({
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+              className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="p-6 border-b border-grey-soft flex items-center justify-between sticky top-0 bg-white">
+              {/* Header */}
+              <div className="p-6 border-b border-grey-soft flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-navy">Crop Photo</h2>
                 <button
                   onClick={handleCancel}
@@ -223,93 +271,91 @@ export function PhotoCropUpload({
                 </button>
               </div>
 
-              <div className="p-6 space-y-6">
-                {/* Crop Area */}
-                {previewUrl && (
-                  <div className="flex justify-center">
-                    <div className="w-full max-w-md">
-                      <ReactCrop
-                        crop={crop}
-                        onChange={(c) => setCrop(c)}
-                        aspect={1}
-                        circularCrop={false}
-                        className="max-w-full"
-                      >
-                        <img
-                          ref={imgRef}
-                          src={previewUrl}
-                          alt="Crop preview"
-                          className="max-w-full h-auto"
-                          onLoad={(e) => {
-                            // Center crop on load
-                            const { naturalWidth, naturalHeight } = e.currentTarget
-                            const minDim = Math.min(naturalWidth, naturalHeight)
-                            setCrop({
-                              unit: 'px',
-                              width: minDim * 0.9,
-                              height: minDim * 0.9,
-                              x: (naturalWidth - minDim * 0.9) / 2,
-                              y: (naturalHeight - minDim * 0.9) / 2,
-                            })
+              {/* Content */}
+              <div className="flex-1 overflow-y-auto flex flex-col p-6">
+                <div className="flex-1 flex flex-col gap-6">
+                  {/* Crop Editor - Fixed Square Viewport */}
+                  {previewUrl && (
+                    <div className="flex flex-col gap-3">
+                      <p className="text-sm font-medium text-navy">Position Your Photo</p>
+                      <div className="relative w-full bg-ivory-dark rounded-xl overflow-hidden" style={{ aspectRatio: '1' }}>
+                        <Cropper
+                          image={previewUrl}
+                          crop={crop}
+                          zoom={zoom}
+                          aspect={1}
+                          cropShape="rect"
+                          showGrid={false}
+                          onCropChange={setCrop}
+                          onCropComplete={handleCropComplete}
+                          onZoomChange={setZoom}
+                          classes={{
+                            containerClassName: 'absolute inset-0',
+                            mediaClassName: 'w-full h-full',
+                            cropAreaClassName: 'border-2 border-gold shadow-lg',
                           }}
+                          restrictPosition={false}
                         />
-                      </ReactCrop>
+                      </div>
+
+                      {/* Zoom Controls */}
+                      <div className="flex items-center gap-3 px-2">
+                        <button
+                          onClick={() => setZoom(Math.max(1, zoom - 0.1))}
+                          disabled={zoom <= 1}
+                          className="p-2 text-grey hover:text-navy hover:bg-ivory-light rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Zoom Out"
+                        >
+                          <ZoomOut className="h-4 w-4" />
+                        </button>
+                        
+                        <div className="flex-1 flex items-center gap-2">
+                          <input
+                            type="range"
+                            min="1"
+                            max="3"
+                            step="0.1"
+                            value={zoom}
+                            onChange={(e) => setZoom(Number(e.target.value))}
+                            className="flex-1 h-1 bg-grey-soft rounded-lg appearance-none cursor-pointer"
+                            style={{
+                              background: `linear-gradient(to right, #ddd 0%, #ddd ${((zoom - 1) / 2) * 100}%, #e8dcc8 ${((zoom - 1) / 2) * 100}%, #e8dcc8 100%)`
+                            }}
+                          />
+                          <span className="text-xs text-grey w-8 text-right">{zoom.toFixed(1)}x</span>
+                        </div>
+                        
+                        <button
+                          onClick={() => setZoom(Math.min(3, zoom + 0.1))}
+                          disabled={zoom >= 3}
+                          className="p-2 text-grey hover:text-navy hover:bg-ivory-light rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Zoom In"
+                        >
+                          <ZoomIn className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Preview */}
-                {previewUrl && (
-                  <div className="text-center">
-                    <p className="text-sm text-grey mb-3">Preview</p>
-                    <div className="w-32 h-32 mx-auto rounded-2xl bg-ivory-dark border border-grey-soft overflow-hidden">
-                      {imgRef.current && crop && (
-                        <canvas
-                          ref={(canvas) => {
-                            if (!canvas || !imgRef.current) return
-                            const img = imgRef.current
-                            const naturalWidth = img.naturalWidth
-                            const naturalHeight = img.naturalHeight
-
-                            // Convert crop coordinates to natural image pixels
-                            let cropX = crop.x
-                            let cropY = crop.y
-                            let cropWidth = crop.width
-                            let cropHeight = crop.height
-
-                            // If crop is still in percentage mode
-                            if (crop.unit === '%') {
-                              cropX = (crop.x / 100) * naturalWidth
-                              cropY = (crop.y / 100) * naturalHeight
-                              cropWidth = (crop.width / 100) * naturalWidth
-                              cropHeight = (crop.height / 100) * naturalHeight
-                            }
-
-                            // Ensure crop is within bounds
-                            cropX = Math.max(0, Math.min(cropX, naturalWidth))
-                            cropY = Math.max(0, Math.min(cropY, naturalHeight))
-                            cropWidth = Math.max(1, Math.min(cropWidth, naturalWidth - cropX))
-                            cropHeight = Math.max(1, Math.min(cropHeight, naturalHeight - cropY))
-
-                            // Square crop for profile
-                            const size = Math.min(cropWidth, cropHeight)
-                            canvas.width = size
-                            canvas.height = size
-
-                            const ctx = canvas.getContext('2d')
-                            if (ctx) {
-                              ctx.drawImage(img, cropX, cropY, size, size, 0, 0, size, size)
-                            }
-                          }}
-                          className="w-full h-full object-cover"
-                        />
-                      )}
+                  {/* Preview */}
+                  {previewUrl && (
+                    <div className="flex flex-col gap-3">
+                      <p className="text-sm font-medium text-navy">Preview</p>
+                      <div className="flex justify-center">
+                        <div className="w-40 h-40 rounded-2xl bg-ivory-dark border-2 border-grey-soft overflow-hidden flex items-center justify-center">
+                          <canvas
+                            ref={previewCanvasRef}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-xs text-grey text-center">This is exactly what will be saved</p>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-3 pt-4 border-t border-grey-soft">
+                <div className="flex items-center gap-3 pt-6 mt-auto border-t border-grey-soft">
                   <button
                     onClick={handleCancel}
                     disabled={isProcessing}
@@ -343,3 +389,4 @@ export function PhotoCropUpload({
     </>
   )
 }
+
