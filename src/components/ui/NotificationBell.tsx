@@ -55,6 +55,30 @@ export function NotificationBell() {
     return () => { cancelled = true }
   }, [user?.id])
 
+  // Periodic refresh as fallback (every 12 seconds)
+  useEffect(() => {
+    if (!user?.id) return
+
+    const interval = setInterval(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('notifications')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(20)
+
+        if (!error && data) {
+          setNotifications(data)
+        }
+      } catch (err) {
+        // Silent fail on periodic refresh
+      }
+    }, 12000)
+
+    return () => clearInterval(interval)
+  }, [user?.id])
+
   // Subscribe to realtime notifications
   useEffect(() => {
     if (!user?.id) return
@@ -76,7 +100,11 @@ export function NotificationBell() {
         (payload: any) => {
           const newNotif = payload.new as Notification
           console.log('[NotificationBell] new notification received:', newNotif.title)
-          setNotifications(prev => [newNotif, ...prev])
+          // Avoid duplicates by checking if notification ID already exists
+          setNotifications(prev => {
+            const exists = prev.some(n => n.id === newNotif.id)
+            return exists ? prev : [newNotif, ...prev]
+          })
         }
       )
       .on(

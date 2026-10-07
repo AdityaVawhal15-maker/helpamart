@@ -55,6 +55,19 @@ export default function MentorBookings() {
 
     loadBookings()
 
+    // Periodic refresh as fallback (every 10 seconds)
+    const refreshInterval = setInterval(async () => {
+      if (cancelled) return
+      try {
+        const data = await getMentorBookings(mentorId)
+        if (!cancelled) {
+          setBookings(data)
+        }
+      } catch (err) {
+        console.error('[MentorBookings] periodic refresh error:', err)
+      }
+    }, 10000)
+
     // Subscribe to realtime booking changes for this mentor
     console.log('[MentorBookings] Subscribing to realtime for mentor:', mentorId)
     const channel = supabase
@@ -86,6 +99,7 @@ export default function MentorBookings() {
 
     return () => {
       cancelled = true
+      clearInterval(refreshInterval)
       channel.unsubscribe()
     }
   }, [user, mentor, authLoading, navigate])

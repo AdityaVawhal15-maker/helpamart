@@ -22,12 +22,23 @@ CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON public.notifications 
 
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 
+-- Policy for authenticated users: can only see/modify their own notifications
 DROP POLICY IF EXISTS "notifications_user_own" ON public.notifications;
 CREATE POLICY "notifications_user_own"
   ON public.notifications FOR ALL
   TO authenticated
   USING (auth.uid() = user_id)
   WITH CHECK (auth.uid() = user_id);
+
+-- CRITICAL: Policy for service_role (server-side): can insert notifications for any user
+-- This is needed for api/book.ts to create notifications with user_id = mentorRow.user_id
+-- Without this, service_role inserts are silently rejected by RLS despite GRANT ALL
+DROP POLICY IF EXISTS "notifications_service_role_bypass" ON public.notifications;
+CREATE POLICY "notifications_service_role_bypass"
+  ON public.notifications
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.notifications TO authenticated;
 GRANT ALL ON public.notifications TO service_role;
