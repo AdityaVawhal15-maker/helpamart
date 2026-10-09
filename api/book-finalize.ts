@@ -18,7 +18,6 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
-import crypto from 'crypto'
 import nodemailer from 'nodemailer'
 
 // ─── Supabase admin client ────────────────────────────────────────────────────
@@ -64,66 +63,112 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
   }
 }
 
-// ─── Create Google Meet (existing implementation) ──────────────────────────────
-async function getCentralMeetCredentials(db: ReturnType<typeof adminSupabase>) {
-  const { data: creds } = await db
-    .from('stored_secrets')
-    .select('*')
-    .eq('name', 'google_calendar')
-    .maybeSingle()
+// ─── Resolve central Google Meet credentials ──────────────────────────────────
+// Hierarchy:
+//   1. google_service_connections table (written by /api/admin-meet-callback)
+//   2. GOOGLE_MEET_REFRESH_TOKEN or HELPAMART_GOOGLE_REFRESH_TOKEN env vars
+async function getCentralMeetCredentials(db: ReturnType<typeof adminSupabase>): Promise<{
+  clientId: string
+  clientSecret: string
+  refreshToken: string
+} | null> {
+  const clientId = process.env.GOOGLE_CLIENT_ID
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
 
-  if (!creds?.value) throw new Error('Google Meet credentials not configured.')
+  if (!clientId || !clientSecret) {
+    console.error('[FINALIZE] CRITICAL: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set in Vercel env vars')
+    return null
+  }
 
-  let parsedCreds: any
+  let refreshToken: string | null = null
+
+  // 1. Try DB (authoritative)
   try {
-    parsedCreds = JSON.parse(creds.value)
-  } catch {
-    throw new Error('Invalid Google credentials.')
+    const { data: conn, error: dbErr } = await db
+      .from('google_service_connections')
+      .select('refresh_token, status, account_email')
+      .in('key', ['helpamart_meet', 'helpamart_organizer'])
+      .eq('status', 'connected')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (dbErr) {
+      console.warn(`[FINALIZE] google_service_connections query error: ${dbErr.message}`)
+    }
+
+    if (conn?.status === 'connected' && conn.refresh_token) {
+      refreshToken = conn.refresh_token
+      console.log(`[FINALIZE] Central Google Meet token resolved from DB (account: ${conn.account_email || 'unknown'})`)
+    }
+  } catch (e: any) {
+    console.error(`[FINALIZE] google_service_connections lookup failed: ${e?.message}`)
   }
 
-  if (!parsedCreds?.service_account_email) {
-    throw new Error('Incomplete Google credentials.')
+  // 2. Env var fallback
+  if (!refreshToken) {
+    const envToken = process.env.GOOGLE_MEET_REFRESH_TOKEN || process.env.HELPAMART_GOOGLE_REFRESH_TOKEN
+    if (envToken) {
+      refreshToken = envToken
+      console.log(`[FINALIZE] Central Google Meet token resolved from env_var`)
+    }
   }
 
-  return parsedCreds
+  if (!refreshToken) {
+    console.error(`[FINALIZE] CRITICAL: No Google Meet refresh token found (DB or env). Visit /admin/meet to authorize.`)
+    return null
+  }
+
+  return { clientId, clientSecret, refreshToken }
 }
 
+// ─── Generate Google access token from refresh token ──────────────────────────
 async function getGoogleAccessToken(creds: {
-  private_key: string
-  client_email: string
-  token_uri: string
+  clientId: string
+  clientSecret: string
+  refreshToken: string
 }): Promise<string> {
-  const now = Math.floor(Date.now() / 1000)
-  const claims = {
-    iss: creds.client_email,
-    scope: 'https://www.googleapis.com/auth/meetings.space.create',
-    aud: creds.token_uri,
-    exp: now + 3600,
-    iat: now,
-  }
-
-  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64')
-  const payload = Buffer.from(JSON.stringify(claims)).toString('base64')
-  const signature = crypto
-    .createSign('SHA256')
-    .update(`${header}.${payload}`)
-    .sign(creds.private_key, 'base64')
-
-  const jwt = `${header}.${payload}.${signature}`
-
-  const tokenRes = await fetch(creds.token_uri, {
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
+    body: new URLSearchParams({
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
+      refresh_token: creds.refreshToken,
+      grant_type: 'refresh_token',
+    }),
   })
 
-  const tokenData = (await tokenRes.json()) as { access_token?: string }
-  if (!tokenData.access_token) throw new Error('Could not get Google token.')
+  if (!tokenRes.ok) {
+    const errText = await tokenRes.text()
+    console.error('[FINALIZE] Google OAuth token refresh FAILED:', tokenRes.status, errText)
+    let detail = errText
+    try { detail = JSON.stringify(JSON.parse(errText)) } catch { /* raw text is fine */ }
+    throw new Error(`Google token refresh failed (HTTP ${tokenRes.status}): ${detail}`)
+  }
+
+  const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string; error_description?: string }
+  if (tokenData.error) {
+    console.error('[FINALIZE] Google OAuth token error field:', tokenData.error, tokenData.error_description)
+    throw new Error(`Google token error: ${tokenData.error} — ${tokenData.error_description || 'no description'}`)
+  }
+  if (!tokenData.access_token) {
+    throw new Error('Google token refresh returned no access_token.')
+  }
 
   return tokenData.access_token
 }
 
-async function createGoogleMeetSpace(accessToken: string): Promise<{ meetUrl: string; spaceName: string }> {
+// ─── Create real Google Meet space via Google Meet REST API v2 ────────────────
+// Direct call to POST https://meet.googleapis.com/v2/spaces
+// Returns the real meetingUri generated by Google
+async function createGoogleMeetSpace(accessToken: string): Promise<{
+  meetingUri: string
+  spaceName: string
+  meetingCode: string
+}> {
+  console.log('[FINALIZE] Calling Google Meet REST API: POST https://meet.googleapis.com/v2/spaces')
+
   const meetRes = await fetch('https://meet.googleapis.com/v2/spaces', {
     method: 'POST',
     headers: {
@@ -134,18 +179,42 @@ async function createGoogleMeetSpace(accessToken: string): Promise<{ meetUrl: st
   })
 
   if (!meetRes.ok) {
-    const error = await meetRes.text()
-    console.error('[MEET] Failed:', error)
-    throw new Error('Google Meet creation failed.')
+    const errText = await meetRes.text()
+    let parsedErr: any = null
+    try { parsedErr = JSON.parse(errText) } catch { /* raw text */ }
+    const googleErrMsg = parsedErr?.error?.message || parsedErr?.message || errText
+    const googleErrStatus = parsedErr?.error?.status || parsedErr?.status || 'UNKNOWN'
+    console.error(
+      `[FINALIZE] Google Meet API spaces.create FAILED:`,
+      `HTTP ${meetRes.status}`,
+      `status=${googleErrStatus}`,
+      `message=${googleErrMsg}`,
+      `full_body=${errText}`,
+    )
+    throw new Error(`Google Meet API error (HTTP ${meetRes.status} ${googleErrStatus}): ${googleErrMsg}`)
   }
 
-  const meetData = (await meetRes.json()) as { name?: string; meetingUri?: string }
-  if (!meetData.meetingUri) throw new Error('No meetingUri returned.')
+  const meetData = (await meetRes.json()) as {
+    name?: string
+    meetingUri?: string
+    meetingCode?: string
+  }
 
-  return { meetUrl: meetData.meetingUri, spaceName: meetData.name || '' }
+  const meetingUri = meetData.meetingUri
+  if (!meetingUri || typeof meetingUri !== 'string' || !meetingUri.startsWith('https://meet.google.com/')) {
+    console.error('[FINALIZE] Google Meet API returned unexpected body:', JSON.stringify(meetData))
+    throw new Error(`Google Meet API did not return a valid meetingUri. Body: ${JSON.stringify(meetData)}`)
+  }
+
+  console.log(`[FINALIZE] Google Meet space created successfully: ${meetingUri} (space: ${meetData.name || 'none'})`)
+  return {
+    meetingUri,
+    spaceName: meetData.name || '',
+    meetingCode: meetData.meetingCode || '',
+  }
 }
 
-// ─── Email helpers ────────────────────────────────────────────────────────────
+// ─── Email helpers (Hostinger SMTP) ───────────────────────────────────────────
 function getTransporter() {
   const host = process.env.SMTP_HOST
   const user = process.env.SMTP_USER
@@ -167,7 +236,8 @@ function fmt(iso: string, tz: string, opts: Intl.DateTimeFormatOptions) {
   }
 }
 
-async function sendEmails(opts: {
+// ─── Helper to send MENTOR booking email (awaitable, returns result) ─────────
+async function sendMentorBookingEmail(opts: {
   bookingId: string
   mentorName: string
   mentorEmail: string | null
@@ -177,61 +247,199 @@ async function sendEmails(opts: {
   startAt: string
   endAt: string
   timezone: string
+  priceCents: number
   meetUrl: string
-}) {
-  const transport = getTransporter()
-  const from = process.env.SMTP_FROM || 'HELPAMART <guidance@helpamart.com>'
-  const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-  const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
-  const endTime = fmt(opts.endAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
-
-  if (!transport) {
-    console.warn('[EMAIL] SMTP not configured, skipping email send')
-    return
+}): Promise<{ success: boolean; error?: string }> {
+  if (!opts.mentorEmail) {
+    console.log('[FINALIZE] mentor_email=SKIPPED (no email)')
+    return { success: false, error: 'no_email' }
   }
 
-  try {
-    if (opts.menteeEmail) {
-      await transport.sendMail({
-        from,
-        to: opts.menteeEmail,
-        subject: `Your session with ${opts.mentorName} is confirmed`,
-        html: `
-          <h2>Session Confirmed</h2>
-          <p>Your mentorship session is confirmed:</p>
-          <ul>
-            <li><strong>Mentor:</strong> ${opts.mentorName}</li>
-            <li><strong>Service:</strong> ${opts.serviceTitle}</li>
-            <li><strong>Date & Time:</strong> ${dateStr}, ${startTime} – ${endTime}</li>
-            <li><strong>Google Meet:</strong> <a href="${opts.meetUrl}">Join here</a></li>
-          </ul>
-          <p>See you soon!</p>
-        `,
-      })
-      console.log('[EMAIL] Mentee email sent:', opts.menteeEmail)
-    }
+  const transport = getTransporter()
+  if (!transport) {
+    console.error('[FINALIZE] mentor_email=FAILED (SMTP not configured)')
+    return { success: false, error: 'smtp_not_configured' }
+  }
 
-    if (opts.mentorEmail) {
-      await transport.sendMail({
-        from,
-        to: opts.mentorEmail,
-        subject: `New session with ${opts.menteeName}`,
-        html: `
-          <h2>New Session Scheduled</h2>
-          <p>You have a new mentorship session:</p>
-          <ul>
-            <li><strong>Mentee:</strong> ${opts.menteeName}</li>
-            <li><strong>Service:</strong> ${opts.serviceTitle}</li>
-            <li><strong>Date & Time:</strong> ${dateStr}, ${startTime} – ${endTime}</li>
-            <li><strong>Google Meet:</strong> <a href="${opts.meetUrl}">Join here</a></li>
-          </ul>
-          <p>See you there!</p>
-        `,
-      })
-      console.log('[EMAIL] Mentor email sent:', opts.mentorEmail)
-    }
-  } catch (err: any) {
-    console.error('[EMAIL] Failed:', err.message)
+  const from = process.env.SMTP_FROM || 'HELPAMART <hello@helpamart.com>'
+
+  // Validate Meet URL
+  if (!opts.meetUrl || !opts.meetUrl.startsWith('https://meet.google.com/')) {
+    console.error('[FINALIZE] mentor_email=FAILED (invalid meet URL):', opts.meetUrl)
+    return { success: false, error: 'invalid_meet_url' }
+  }
+
+  const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
+  const priceDisplay = opts.priceCents === 0
+    ? 'Free (first HELPAMART session)'
+    : `₹${Math.round(opts.priceCents / 100)}`
+
+  const meetBlock = `
+    <div style="margin:24px 0;padding:20px;background:#f4efe6;border-radius:12px;border-left:4px solid #B77A22;">
+      <p style="margin:0 0 8px;font-weight:700;color:#071A35;font-size:16px;">Google Meet Video Call</p>
+      <p style="margin:0 0 14px;color:#555;font-size:14px;">Your session will take place via Google Meet. Click below to join at your scheduled time:</p>
+      <a href="${opts.meetUrl}" style="display:inline-block;padding:12px 24px;background:#071A35;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Join Google Meet</a>
+      <p style="margin:12px 0 0;font-size:13px;color:#666;word-break:break-all;">Direct Link: <a href="${opts.meetUrl}" style="color:#B77A22;">${opts.meetUrl}</a></p>
+    </div>`
+
+  const table = (rows: [string, string][]) => `
+    <table style="width:100%;border-collapse:collapse;font-size:14px;">
+      ${rows.map(([l, v]) => `<tr>
+        <td style="padding:6px 0;color:#666;width:130px;">${l}</td>
+        <td style="padding:6px 0;font-weight:600;color:#071A35;">${v}</td>
+      </tr>`).join('')}
+    </table>`
+
+  function wrap(title: string, greeting: string, body: string) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6;color:#071A35;background:#FDFBF7;padding:24px;">
+    <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;padding:32px;border:1px solid #e8e3d9;">
+      <div style="border-bottom:2px solid #B77A22;padding-bottom:14px;margin-bottom:22px;">
+        <h2 style="margin:0;color:#071A35;font-size:22px;">HELPAMART</h2>
+        <p style="margin:3px 0 0;color:#B77A22;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${title}</p>
+      </div>
+      <p style="font-size:15px;margin-bottom:16px;">${greeting}</p>
+      ${body}
+      <p style="font-size:13px;color:#888;margin-top:28px;border-top:1px solid #e8e3d9;padding-top:14px;">
+        HELPAMART — I am here for you · <a href="https://helpamart.com" style="color:#B77A22;text-decoration:none;">helpamart.com</a>
+      </p>
+    </div></body></html>`
+  }
+
+  const detailRows: [string, string][] = [
+    ['Session', opts.serviceTitle],
+    ['Date', dateStr],
+    ['Time', `${startTime} (${opts.timezone})`],
+    ['Amount', priceDisplay],
+    ['Booking ID', opts.bookingId],
+  ]
+
+  const html = wrap(
+    'New Session Booked',
+    `Hello <strong>${opts.mentorName}</strong>, a new mentoring session has been booked with you.`,
+    `<div style="background:#FDFBF7;border:1px solid #e8e3d9;border-radius:10px;padding:18px;margin:16px 0;">
+      ${table([...detailRows, ['Student', `${opts.menteeName} (${opts.menteeEmail || 'N/A'})`]])}
+     </div>
+     ${meetBlock}
+     <p style="font-size:14px;">View your sessions in your <a href="https://helpamart.com/mentor-dashboard/bookings" style="color:#B77A22;font-weight:600;">Mentor Dashboard →</a></p>`,
+  )
+
+  try {
+    const info = await transport.sendMail({
+      from,
+      to: opts.mentorEmail,
+      subject: `New HELPAMART session scheduled — ${opts.serviceTitle}`,
+      html,
+    })
+    console.log('[FINALIZE] mentor_email=SENT | to:', opts.mentorEmail.slice(0, 3) + '***', '| messageId:', info.messageId)
+    return { success: true }
+  } catch (e: any) {
+    console.error('[FINALIZE] mentor_email=FAILED | to:', opts.mentorEmail, '| error:', e?.message || e)
+    return { success: false, error: e?.message }
+  }
+}
+
+// ─── Helper to send MENTEE booking email (awaitable, returns result) ─────────
+async function sendMenteeBookingEmail(opts: {
+  bookingId: string
+  mentorName: string
+  menteeName: string
+  menteeEmail: string | null
+  serviceTitle: string
+  startAt: string
+  endAt: string
+  timezone: string
+  priceCents: number
+  meetUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  if (!opts.menteeEmail) {
+    console.log('[FINALIZE] mentee_email=SKIPPED (no email)')
+    return { success: false, error: 'no_email' }
+  }
+
+  const transport = getTransporter()
+  if (!transport) {
+    console.error('[FINALIZE] mentee_email=FAILED (SMTP not configured)')
+    return { success: false, error: 'smtp_not_configured' }
+  }
+
+  const from = process.env.SMTP_FROM || 'HELPAMART <hello@helpamart.com>'
+
+  // Validate Meet URL
+  if (!opts.meetUrl || !opts.meetUrl.startsWith('https://meet.google.com/')) {
+    console.error('[FINALIZE] mentee_email=FAILED (invalid meet URL):', opts.meetUrl)
+    return { success: false, error: 'invalid_meet_url' }
+  }
+
+  const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
+  const priceDisplay = opts.priceCents === 0
+    ? 'Free (first HELPAMART session)'
+    : `₹${Math.round(opts.priceCents / 100)}`
+
+  const meetBlock = `
+    <div style="margin:24px 0;padding:20px;background:#f4efe6;border-radius:12px;border-left:4px solid #B77A22;">
+      <p style="margin:0 0 8px;font-weight:700;color:#071A35;font-size:16px;">Google Meet Video Call</p>
+      <p style="margin:0 0 14px;color:#555;font-size:14px;">Your session will take place via Google Meet. Click below to join at your scheduled time:</p>
+      <a href="${opts.meetUrl}" style="display:inline-block;padding:12px 24px;background:#071A35;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Join Google Meet</a>
+      <p style="margin:12px 0 0;font-size:13px;color:#666;word-break:break-all;">Direct Link: <a href="${opts.meetUrl}" style="color:#B77A22;">${opts.meetUrl}</a></p>
+    </div>`
+
+  const table = (rows: [string, string][]) => `
+    <table style="width:100%;border-collapse:collapse;font-size:14px;">
+      ${rows.map(([l, v]) => `<tr>
+        <td style="padding:6px 0;color:#666;width:130px;">${l}</td>
+        <td style="padding:6px 0;font-weight:600;color:#071A35;">${v}</td>
+      </tr>`).join('')}
+    </table>`
+
+  function wrap(title: string, greeting: string, body: string) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6;color:#071A35;background:#FDFBF7;padding:24px;">
+    <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;padding:32px;border:1px solid #e8e3d9;">
+      <div style="border-bottom:2px solid #B77A22;padding-bottom:14px;margin-bottom:22px;">
+        <h2 style="margin:0;color:#071A35;font-size:22px;">HELPAMART</h2>
+        <p style="margin:3px 0 0;color:#B77A22;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${title}</p>
+      </div>
+      <p style="font-size:15px;margin-bottom:16px;">${greeting}</p>
+      ${body}
+      <p style="font-size:13px;color:#888;margin-top:28px;border-top:1px solid #e8e3d9;padding-top:14px;">
+        HELPAMART — I am here for you · <a href="https://helpamart.com" style="color:#B77A22;text-decoration:none;">helpamart.com</a>
+      </p>
+    </div></body></html>`
+  }
+
+  const detailRows: [string, string][] = [
+    ['Session', opts.serviceTitle],
+    ['Date', dateStr],
+    ['Time', `${startTime} (${opts.timezone})`],
+    ['Amount', priceDisplay],
+    ['Booking ID', opts.bookingId],
+  ]
+
+  const html = wrap(
+    'Session Confirmed',
+    `Hello <strong>${opts.menteeName}</strong>, your mentoring session with <strong>${opts.mentorName}</strong> is confirmed.`,
+    `<div style="background:#FDFBF7;border:1px solid #e8e3d9;border-radius:10px;padding:18px;margin:16px 0;">
+      ${table([...detailRows, ['Mentor', opts.mentorName]])}
+     </div>
+     ${meetBlock}
+     <p style="font-size:14px;">View your sessions in <a href="https://helpamart.com/dashboard/bookings" style="color:#B77A22;font-weight:600;">My Bookings →</a></p>`,
+  )
+
+  try {
+    const info = await transport.sendMail({
+      from,
+      to: opts.menteeEmail,
+      subject: `HELPAMART session confirmed — ${opts.serviceTitle} with ${opts.mentorName}`,
+      html,
+    })
+    console.log('[FINALIZE] mentee_email=SENT | to:', opts.menteeEmail.slice(0, 3) + '***', '| messageId:', info.messageId)
+    return { success: true }
+  } catch (e: any) {
+    console.error('[FINALIZE] mentee_email=FAILED | to:', opts.menteeEmail, '| error:', e?.message || e)
+    return { success: false, error: e?.message }
   }
 }
 
@@ -261,7 +469,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data: booking, error: bookingErr } = await db
       .from('bookings')
       .select(
-        'id, mentee_id, mentor_id, service_title, start_at, end_at, timezone, mentor_email, student_email, payment_status, status, meet_link',
+        'id, mentee_id, mentor_id, service_title, start_at, end_at, timezone, mentor_email, student_email, payment_status, status, meet_link, price_cents',
       )
       .eq('id', bookingId)
       .maybeSingle()
@@ -313,54 +521,103 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       meetUrl = booking.meet_link
       console.log('[FINALIZE] Reusing existing Meet link:', meetUrl.slice(0, 30) + '...')
     } else {
-      console.log('[FINALIZE] Creating Google Meet space...')
+      console.log('[FINALIZE] Resolving central Google Meet credentials...')
       const creds = await getCentralMeetCredentials(db)
+      if (!creds) {
+        throw new Error('Google Meet credentials not configured in DB or environment. Please visit /admin/meet to connect.')
+      }
       const accessToken = await getGoogleAccessToken(creds)
-      ;({ meetUrl } = await createGoogleMeetSpace(accessToken))
+      const meetSpace = await createGoogleMeetSpace(accessToken)
+      meetUrl = meetSpace.meetingUri
       console.log('[FINALIZE] Google Meet created:', meetUrl.slice(0, 30) + '...')
 
       // Save Meet link to booking
-      await db
+      const { error: primaryUpdateErr } = await db
         .from('bookings')
-        .update({ meet_link: meetUrl, updated_at: new Date().toISOString() })
+        .update({
+          meet_link: meetUrl,
+          meet_space_name: meetSpace.spaceName || null,
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', bookingId)
+
+      // Fallback if meet_space_name column not found in DB schema
+      if (primaryUpdateErr?.code === 'PGRST204' && primaryUpdateErr?.message?.includes('meet_space_name')) {
+        await db
+          .from('bookings')
+          .update({ meet_link: meetUrl, updated_at: new Date().toISOString() })
+          .eq('id', bookingId)
+      }
     }
 
     // Send confirmation emails and notifications only on FIRST finalization
     // (i.e. when the Meet link was not previously set — avoids duplicate sends on retry)
     if (!booking.meet_link) {
       console.log('[FINALIZE] Sending confirmation emails...')
-      await sendEmails({
-        bookingId,
-        mentorName,
-        mentorEmail: mentorEmail || booking.mentor_email,
-        menteeName,
-        menteeEmail,
-        serviceTitle: booking.service_title || 'Mentorship Session',
-        startAt: booking.start_at,
-        endAt: booking.end_at,
-        timezone: booking.timezone,
-        meetUrl,
-      })
+      const priceCents = booking.price_cents ?? 9900
+
+      await Promise.allSettled([
+        sendMentorBookingEmail({
+          bookingId,
+          mentorName,
+          mentorEmail: mentorEmail || booking.mentor_email,
+          menteeName,
+          menteeEmail,
+          serviceTitle: booking.service_title || 'Mentorship Session',
+          startAt: booking.start_at,
+          endAt: booking.end_at,
+          timezone: booking.timezone,
+          priceCents,
+          meetUrl,
+        }),
+        sendMenteeBookingEmail({
+          bookingId,
+          mentorName,
+          menteeName,
+          menteeEmail,
+          serviceTitle: booking.service_title || 'Mentorship Session',
+          startAt: booking.start_at,
+          endAt: booking.end_at,
+          timezone: booking.timezone,
+          priceCents,
+          meetUrl,
+        }),
+      ])
 
       console.log('[FINALIZE] Booking finalized:', bookingId)
 
       // Create in-app notifications with real Meet URL
       try {
+        const now = new Date().toISOString()
+        const dateStr = fmt(booking.start_at, booking.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+        const startTime = fmt(booking.start_at, booking.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
+        const amountDisplay = priceCents === 0
+          ? 'Complimentary (first HELPAMART session)'
+          : `₹${Math.round(priceCents / 100)}`
+
+        const menteeNotificationMessage = `Your session with ${mentorName} is confirmed for ${dateStr} at ${startTime}. Service: ${booking.service_title || 'Mentorship Session'}. Amount: ${amountDisplay}. Click to join the Google Meet.`
+        const mentorNotificationMessage = `New session booked with ${menteeName}. ${dateStr} at ${startTime}. Service: ${booking.service_title || 'Mentorship Session'}. Amount: ${amountDisplay}. Click to join the Google Meet.`
+
         const notifications = [
           {
             user_id: userId,
-            title: 'Session Ready',
-            message: `Your session with ${mentorName} is ready. Join the Google Meet at the scheduled time.`,
+            title: 'Session Confirmed',
+            message: menteeNotificationMessage,
             link: meetUrl,
+            read: false,
+            created_at: now,
+            updated_at: now,
           },
         ]
         if (mentor?.user_id) {
           notifications.push({
             user_id: mentor.user_id,
-            title: 'Session Ready',
-            message: `Your session is ready. Join the Google Meet at the scheduled time.`,
+            title: 'New Session Booked',
+            message: mentorNotificationMessage,
             link: meetUrl,
+            read: false,
+            created_at: now,
+            updated_at: now,
           })
         }
         await db.from('notifications').insert(notifications)

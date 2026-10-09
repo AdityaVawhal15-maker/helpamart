@@ -110,6 +110,24 @@ export default function BookingPaymentResult() {
         console.log('[PAYMENT-RESULT] Verification result:', verifyData.paymentStatus)
 
         if (verifyData.paymentStatus === 'completed') {
+          // If booking already has a Meet link (e.g. from prior finalization or recovery), display success immediately
+          if (verifyData.meetLink) {
+            console.log('[PAYMENT-RESULT] Booking already finalized with meetLink:', verifyData.meetLink)
+            setBooking({
+              id: verifyData.bookingId,
+              mentorName: verifyData.mentorName,
+              serviceTitle: verifyData.serviceTitle,
+              startAt: verifyData.startAt,
+              endAt: verifyData.endAt,
+              timezone: verifyData.timezone,
+              meetUrl: verifyData.meetLink,
+              amount: verifyData.amount,
+              currency: verifyData.currency,
+            })
+            setState('success')
+            return
+          }
+
           // Step 2: Call book-finalize to complete the flow
           console.log('[PAYMENT-RESULT] Payment verified, finalizing booking:', verifyData.bookingId)
 
@@ -189,16 +207,18 @@ export default function BookingPaymentResult() {
             </p>
           </div>
         ) : state === 'success' && booking ? (
-          <BookingSuccessDisplay
-            mentorName={booking.mentorName}
-            startAt={booking.startAt}
-            endAt={booking.endAt}
-            timezone={booking.timezone}
-            meetUrl={booking.meetUrl}
-            priceCents={booking.amount}
-            currency={booking.currency}
-            isFirstSession={false}
-          />
+          <div className="bg-white rounded-3xl shadow-[0_20px_60px_rgba(7,26,53,0.12)] p-8 text-center relative overflow-hidden">
+            <BookingSuccessDisplay
+              mentorName={booking.mentorName}
+              startAt={booking.startAt}
+              endAt={booking.endAt}
+              timezone={booking.timezone}
+              meetUrl={booking.meetUrl}
+              priceCents={booking.amount}
+              currency={booking.currency}
+              isFirstSession={false}
+            />
+          </div>
         ) : state === 'failed' ? (
           <div>
             <div className="bg-red-50 border border-red-200 rounded-3xl p-8 mb-8 text-center">

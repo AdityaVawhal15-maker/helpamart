@@ -43,7 +43,7 @@ export default function BookingSuccessDisplay({
 
   function formatPrice(cents: number, curr = 'INR') {
     if (cents === 0) return 'Free'
-    const amount = Math.round(cents / 100)
+    const amount = cents >= 100 ? Math.round(cents / 100) : cents
     if (curr === 'INR') return `₹${amount}`
     if (curr === 'USD') return `$${amount}`
     return `${curr} ${amount}`
