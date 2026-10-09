@@ -45,6 +45,7 @@ interface CashfreeCheckoutProps {
   paymentSessionId: string           // Payment session ID (from init-paid-booking)
   amount: number                     // in cents (₹99 = 9900) — display only
   currency: string                   // 'INR'
+  environment?: 'sandbox' | 'production'  // Cashfree environment (from server)
   onSuccess?: (data: { bookingId: string; orderId: string }) => void
   onError?: (error: string) => void
   onCancel?: () => void
@@ -56,6 +57,7 @@ export function CashfreeCheckout({
   orderId,
   paymentSessionId,
   amount,
+  environment = 'sandbox',
   onSuccess,
   onError,
   onCancel,
@@ -110,9 +112,12 @@ export function CashfreeCheckout({
     }
 
     try {
-      // Initialize Cashfree SDK with mode: sandbox
+      // Initialize Cashfree SDK with environment-aware mode
+      const mode = environment === 'production' ? 'production' : 'sandbox'
+      console.log('[CASHFREE] Initializing SDK with mode:', mode)
+      
       const cashfree = window.Cashfree({
-        mode: 'sandbox',
+        mode: mode,
       })
 
       console.log('[CASHFREE] SDK initialized, opening hosted checkout')
@@ -218,7 +223,7 @@ export function CashfreeCheckout({
           Payment Amount: <span className="font-bold text-lg text-blue-600">₹{amountInRupees}</span>
         </p>
         <p className="text-xs text-gray-500 mt-2">
-          Secure payment via Cashfree Sandbox
+          Secure payment via Cashfree {environment === 'production' ? '(Live)' : '(Test)'}
         </p>
       </div>
 

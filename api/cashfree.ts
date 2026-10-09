@@ -49,7 +49,7 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
   return user.id
 }
 
-// ─── Cashfree API helper (Sandbox only, current API 2025-01-01) ────────────────
+// ─── Cashfree API helper (environment-aware) ──────────────────────────────────
 async function cashfreeRequest(
   endpoint: string,
   body?: Record<string, any>,
@@ -57,14 +57,19 @@ async function cashfreeRequest(
 ): Promise<any> {
   const appId = process.env.CASHFREE_APP_ID
   const secretKey = process.env.CASHFREE_SECRET_KEY
+  const environment = process.env.CASHFREE_ENVIRONMENT || 'sandbox'
 
-  // Sandbox only (production not used in this phase)
-  const baseUrl = 'https://sandbox.cashfree.com'
+  // Select endpoint based on environment
+  const baseUrl = environment === 'production'
+    ? 'https://api.cashfree.com'
+    : 'https://sandbox.cashfree.com'
 
   if (!appId || !secretKey) {
     console.error('[CASHFREE] CRITICAL: CASHFREE_APP_ID or CASHFREE_SECRET_KEY not set')
     throw new Error('Payment service not configured.')
   }
+
+  console.log(`[CASHFREE] Environment: ${environment}, Endpoint: ${baseUrl}`)
 
   const url = `${baseUrl}/pg${endpoint}`
 
@@ -233,6 +238,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const userId = await verifyJwt(req.headers.authorization)
     const db = adminSupabase()
+    const cashfreeEnvironment = process.env.CASHFREE_ENVIRONMENT || 'sandbox'
 
     const { action, bookingId, amount, orderId } = req.body as {
       action?: string
@@ -451,6 +457,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           booking_id: provisionalBookingId,
           order_id,
           payment_session_id,
+          cashfree_environment: cashfreeEnvironment, // Include environment for frontend
         })
       } catch (err: any) {
         // Rollback provisional booking on Cashfree failure
@@ -527,7 +534,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .eq('id', bookingId)
 
         console.log('[CASHFREE] Order created and booking updated:', bookingId)
-        return res.status(200).json({ payment_session_id, order_id })
+        return res.status(200).json({
+          payment_session_id,
+          order_id,
+          cashfree_environment: cashfreeEnvironment, // Include environment for frontend
+        })
       } catch (err: any) {
         return res.status(503).json({ error: err.message || 'Could not create payment order.' })
       }

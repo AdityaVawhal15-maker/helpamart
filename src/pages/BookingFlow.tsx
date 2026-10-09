@@ -186,10 +186,11 @@ export default function BookingFlow() {
         throw new Error(errData.error || 'Failed to initiate payment. Please try again.')
       }
 
-      const { booking_id, payment_session_id, order_id } = json as {
+      const { booking_id, payment_session_id, order_id, cashfree_environment } = json as {
         booking_id: string
         payment_session_id: string
         order_id: string
+        cashfree_environment?: string
       }
 
       console.log('[BOOKING] Cashfree order initialized:', order_id)
@@ -198,6 +199,9 @@ export default function BookingFlow() {
       sessionStorage.setItem('pendingBookingId', booking_id)
       sessionStorage.setItem('cashfreeOrderId', order_id)
       sessionStorage.setItem('cashfreePaymentSessionId', payment_session_id)
+      if (cashfree_environment) {
+        sessionStorage.setItem('cashfreeEnvironment', cashfree_environment)
+      }
 
       setStep('payment')
     } catch (err: unknown) {
@@ -224,6 +228,7 @@ export default function BookingFlow() {
                 sessionStorage.removeItem('pendingBookingId')
                 sessionStorage.removeItem('cashfreeOrderId')
                 sessionStorage.removeItem('cashfreePaymentSessionId')
+                sessionStorage.removeItem('cashfreeEnvironment')
               }}
               className="mt-4 text-blue-600 hover:underline"
             >
@@ -243,6 +248,7 @@ export default function BookingFlow() {
               sessionStorage.removeItem('pendingBookingId')
               sessionStorage.removeItem('cashfreeOrderId')
               sessionStorage.removeItem('cashfreePaymentSessionId')
+              sessionStorage.removeItem('cashfreeEnvironment')
             }}
             className="flex items-center gap-2 text-sm text-grey hover:text-navy transition-colors mb-8 group"
           >
@@ -265,11 +271,13 @@ export default function BookingFlow() {
               paymentSessionId={sessionStorage.getItem('cashfreePaymentSessionId') || ''}
               amount={displayPriceCents}
               currency={displayCurrency}
+              environment={(sessionStorage.getItem('cashfreeEnvironment') as 'sandbox' | 'production') || 'sandbox'}
               onSuccess={async () => {
                 // Clear session storage
                 sessionStorage.removeItem('pendingBookingId')
                 sessionStorage.removeItem('cashfreeOrderId')
                 sessionStorage.removeItem('cashfreePaymentSessionId')
+                sessionStorage.removeItem('cashfreeEnvironment')
                 
                 // Fetch the completed booking
                 try {
