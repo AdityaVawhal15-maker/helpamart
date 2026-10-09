@@ -113,15 +113,30 @@ async function verifyCashfreePayment(orderId: string): Promise<{
     return { status: 'pending', amount: 0, currency: 'INR' }
   }
 
-  // Log all payment attempts for diagnostics
+  // Log all payment attempts for diagnostics - CRITICAL for debugging
+  console.log('[VERIFY-PAYMENT] === CASHFREE API RESPONSE ===')
   console.log('[VERIFY-PAYMENT] Total payment attempts:', data.payments.length)
   data.payments.forEach((p: any, i: number) => {
-    console.log(`[VERIFY-PAYMENT] Attempt ${i + 1}: status=${p.payment_status}, amount=${p.payment_amount}, id=${p.cf_payment_id}`)
+    console.log(`[VERIFY-PAYMENT] Attempt ${i + 1}:`)
+    console.log(`  - cf_payment_id: ${p.cf_payment_id}`)
+    console.log(`  - payment_status: ${p.payment_status}`)
+    console.log(`  - payment_amount: ${p.payment_amount}`)
+    console.log(`  - payment_currency: ${p.payment_currency}`)
+    console.log(`  - payment_method: ${p.payment_method}`)
+    console.log(`  - payment_time: ${p.payment_time}`)
   })
+  console.log('[VERIFY-PAYMENT] === END CASHFREE RESPONSE ===')
 
   // Look for a successful payment in the entire array (not just the first one)
   const successfulPayment = data.payments.find(
-    (p: any) => p.payment_status === 'SUCCESS' || p.payment_status === 'success'
+    (p: any) => {
+      const status = p.payment_status ? p.payment_status.toUpperCase() : ''
+      // Accept multiple statuses that indicate successful payment
+      return status === 'SUCCESS' || 
+             status === 'SETTLED' || 
+             status === 'AUTHORIZED' ||
+             status === 'CHARGED'
+    }
   )
 
   if (successfulPayment) {
@@ -140,7 +155,13 @@ async function verifyCashfreePayment(orderId: string): Promise<{
 
   // Check for failed payments
   const failedPayment = data.payments.find(
-    (p: any) => p.payment_status === 'FAILED' || p.payment_status === 'failed'
+    (p: any) => {
+      const status = p.payment_status ? p.payment_status.toUpperCase() : ''
+      return status === 'FAILED' || 
+             status === 'CANCELLED' || 
+             status === 'USER_DROPPED' ||
+             status === 'DECLINED'
+    }
   )
 
   if (failedPayment) {
