@@ -113,17 +113,44 @@ async function verifyCashfreePayment(orderId: string): Promise<{
     return { status: 'pending', amount: 0, currency: 'INR' }
   }
 
-  // Get the most recent payment (first in array)
-  const payment = data.payments[0]
+  // Look for a successful payment in the entire array (not just the first one)
+  const successfulPayment = data.payments.find(
+    (p: any) => p.payment_status === 'SUCCESS' || p.payment_status === 'success'
+  )
 
-  console.log('[VERIFY-PAYMENT] Payment raw status:', payment.payment_status, 'Amount:', payment.amount)
+  if (successfulPayment) {
+    const amount = successfulPayment.payment_amount
+      ? Math.round(parseFloat(successfulPayment.payment_amount) * 100)
+      : successfulPayment.amount || 0
+    const currency = successfulPayment.payment_currency || 'INR'
+    console.log('[VERIFY-PAYMENT] Successful payment found:', {
+      status: 'SUCCESS',
+      amount,
+      currency,
+      payment_id: successfulPayment.cf_payment_id,
+    })
+    return { status: 'SUCCESS', amount, currency }
+  }
+
+  // Check for failed payments
+  const failedPayment = data.payments.find(
+    (p: any) => p.payment_status === 'FAILED' || p.payment_status === 'failed'
+  )
+
+  if (failedPayment) {
+    console.log('[VERIFY-PAYMENT] Failed payment found:', failedPayment.payment_status)
+    return { status: 'FAILED', amount: 0, currency: 'INR' }
+  }
+
+  // All other statuses are pending (or still processing)
+  const payment = data.payments[0]
+  console.log('[VERIFY-PAYMENT] Payment raw status:', payment.payment_status, 'Total payments:', data.payments.length)
   console.log('[VERIFY-PAYMENT] Payment ID:', payment.cf_payment_id || 'unknown')
-  console.log('[VERIFY-PAYMENT] Total payments in order:', data.payments.length)
 
   return {
     status: payment.payment_status || 'pending',
     amount: payment.amount || 0,
-    currency: payment.cf_payment_method?.payment_currency || 'INR',
+    currency: payment.payment_currency || 'INR',
     paymentMethod: payment.payment_method,
   }
 }
