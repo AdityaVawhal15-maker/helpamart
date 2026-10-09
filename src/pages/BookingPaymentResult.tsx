@@ -15,10 +15,11 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Check, X, Clock, ArrowRight } from 'lucide-react'
+import { X, Clock } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { Button } from '@/components/ui/Button'
+import BookingSuccessDisplay from '@/components/BookingSuccessDisplay'
 
 type PaymentState = 'loading' | 'verifying' | 'success' | 'failed' | 'pending' | 'error'
 
@@ -30,6 +31,8 @@ interface BookingDetails {
   endAt: string
   timezone: string
   meetUrl: string
+  amount: number
+  currency: string
 }
 
 export default function BookingPaymentResult() {
@@ -140,6 +143,8 @@ export default function BookingPaymentResult() {
             endAt: verifyData.endAt,
             timezone: verifyData.timezone,
             meetUrl: finalizeData.booking.meetUrl,
+            amount: verifyData.amount,
+            currency: verifyData.currency,
           })
 
           setState('success')
@@ -165,24 +170,6 @@ export default function BookingPaymentResult() {
     verifyAndFinalize()
   }, [orderId, user, authLoading])
 
-  const fmt = (iso: string, tz: string) => {
-    try {
-      const date = new Date(iso)
-      return new Intl.DateTimeFormat('en-IN', {
-        timeZone: tz,
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-      }).format(date)
-    } catch {
-      return iso.slice(0, 16)
-    }
-  }
-
   return (
     <div className="min-h-screen bg-ivory flex items-center justify-center p-6 py-24">
       <motion.div
@@ -202,61 +189,16 @@ export default function BookingPaymentResult() {
             </p>
           </div>
         ) : state === 'success' && booking ? (
-          <div>
-            <div className="bg-green-50 border border-green-200 rounded-3xl p-8 mb-8 text-center">
-              <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
-                <Check className="w-6 h-6 text-green-600" />
-              </div>
-              <h1 className="text-display-md font-display text-navy mb-2">Session Confirmed!</h1>
-              <p className="text-green-700 text-sm mb-4">Your payment was successful.</p>
-            </div>
-
-            <div className="bg-white rounded-3xl border border-grey-soft p-6 mb-6 space-y-4">
-              <div>
-                <p className="text-xs font-semibold text-grey uppercase tracking-wide mb-1">Mentor</p>
-                <p className="text-navy font-semibold">{booking.mentorName}</p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-grey uppercase tracking-wide mb-1">Service</p>
-                <p className="text-navy font-semibold">{booking.serviceTitle}</p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-grey uppercase tracking-wide mb-1">Date & Time</p>
-                <p className="text-navy font-semibold">
-                  {fmt(booking.startAt, booking.timezone)}
-                </p>
-              </div>
-              <div className="pt-4 border-t border-grey-soft">
-                <p className="text-xs font-semibold text-grey uppercase tracking-wide mb-2">Google Meet</p>
-                <a
-                  href={booking.meetUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-700 font-semibold text-sm transition-colors"
-                >
-                  Join Meeting
-                  <ArrowRight className="w-4 h-4" />
-                </a>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3">
-              <Button
-                onClick={() => navigate('/dashboard/bookings')}
-                variant="primary"
-                className="w-full"
-              >
-                View Your Bookings
-              </Button>
-              <Button
-                onClick={() => navigate('/')}
-                variant="outline-gold"
-                className="w-full"
-              >
-                Go Home
-              </Button>
-            </div>
-          </div>
+          <BookingSuccessDisplay
+            mentorName={booking.mentorName}
+            startAt={booking.startAt}
+            endAt={booking.endAt}
+            timezone={booking.timezone}
+            meetUrl={booking.meetUrl}
+            priceCents={booking.amount}
+            currency={booking.currency}
+            isFirstSession={false}
+          />
         ) : state === 'failed' ? (
           <div>
             <div className="bg-red-50 border border-red-200 rounded-3xl p-8 mb-8 text-center">

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { CheckCircle, Calendar, Clock, Globe, ArrowLeft, Loader2, VideoIcon, IndianRupee } from 'lucide-react'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 import { CashfreeCheckout } from '@/components/ui/CashfreeCheckout'
+import BookingSuccessDisplay from '@/components/BookingSuccessDisplay'
 import type { MentorService } from '@/types'
 
 type State = {
@@ -346,115 +347,20 @@ export default function BookingFlow() {
           transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
           className="max-w-md w-full bg-white rounded-3xl shadow-[0_20px_60px_rgba(7,26,53,0.12)] p-8 text-center relative overflow-hidden"
         >
-          {/* Premium confetti burst — soft gold particles */}
-          <ConfettiBurst />
+          {/* Premium confetti burst — soft gold particles (FREE only) */}
+          {booking.isFirstSession && <ConfettiBurst />}
 
           <div className="relative z-10">
-            <motion.div
-              initial={{ scale: 0.5, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ delay: 0.2, duration: 0.5, ease: [0.34, 1.56, 0.64, 1] }}
-              className="w-16 h-16 rounded-full bg-gold/15 flex items-center justify-center mx-auto mb-6"
-            >
-              <CheckCircle className="h-8 w-8 text-gold" />
-            </motion.div>
-
-            <motion.h1
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.35, duration: 0.5 }}
-              className="text-display-md font-display text-navy mb-2"
-            >
-              You&apos;re booked.
-            </motion.h1>
-            <motion.p
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.45, duration: 0.5 }}
-              className="text-grey mb-2 leading-relaxed"
-            >
-              Your session with <strong className="text-navy">{booking.mentorName}</strong> has been confirmed.
-            </motion.p>
-            {booking.isFirstSession && (
-              <motion.p
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.55, duration: 0.4 }}
-                className="text-sm text-gold font-semibold mb-6"
-              >
-                First session — complimentary ✦
-              </motion.p>
-            )}
-
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.5, duration: 0.5 }}
-              className="bg-ivory-light rounded-2xl p-5 text-left space-y-3 mb-8"
-            >
-              <div className="flex items-start gap-3">
-                <Calendar className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs text-grey">Date</p>
-                  <p className="text-sm font-medium text-navy">{formatDate(start)}</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <Clock className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs text-grey">Time</p>
-                  <p className="text-sm font-medium text-navy">{formatTime(start)} – {formatTime(end)}</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <Globe className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs text-grey">Timezone</p>
-                  <p className="text-sm font-medium text-navy">{timezone}</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <IndianRupee className="h-4 w-4 text-gold mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs text-grey">Amount</p>
-                  <p className="text-sm font-medium text-navy">{formatPrice(booking.priceCents, booking.currency)}</p>
-                </div>
-              </div>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.6, duration: 0.5 }}
-              className="space-y-3"
-            >
-              {/* JOIN GOOGLE MEET — real URL returned from Google Meet REST API */}
-              <a
-                href={meetUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 w-full py-4 bg-navy text-white rounded-xl font-semibold hover:bg-navy-mid hover:shadow-[0_6px_20px_rgba(7,26,53,0.2)] transition-all cursor-pointer text-sm"
-              >
-                <VideoIcon className="h-4 w-4" />
-                JOIN GOOGLE MEET
-              </a>
-
-              {/* VIEW MY BOOKINGS */}
-              <button
-                onClick={() => navigate('/dashboard/bookings')}
-                className="w-full py-3.5 border border-grey-soft text-navy rounded-xl font-semibold text-sm hover:border-gold/40 hover:bg-ivory-light transition-colors"
-              >
-                VIEW MY BOOKINGS
-              </button>
-
-              {/* OPEN / VIEW SESSION DETAILS */}
-              <button
-                onClick={() => navigate('/dashboard/bookings')}
-                className="w-full py-2.5 text-grey hover:text-navy text-xs font-semibold tracking-wider uppercase transition-colors"
-              >
-                VIEW SESSION DETAILS
-              </button>
-            </motion.div>
+            <BookingSuccessDisplay
+              mentorName={booking.mentorName}
+              startAt={booking.startAt}
+              endAt={booking.endAt}
+              timezone={timezone}
+              meetUrl={meetUrl}
+              priceCents={booking.priceCents}
+              currency={booking.currency}
+              isFirstSession={booking.isFirstSession}
+            />
           </div>
         </motion.div>
       </div>
