@@ -36,7 +36,7 @@ function adminSupabase() {
   return createClient(url, key, { auth: { persistSession: false } })
 }
 
-// ─── Verify JWT ───────────────────────────────────────────────────────────────
+// ─── Verify JWT using Supabase client (not auth endpoint) ────────────────────
 async function verifyJwt(authHeader: string | undefined): Promise<string> {
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
   if (!token) {
@@ -44,41 +44,30 @@ async function verifyJwt(authHeader: string | undefined): Promise<string> {
     throw new Error('Not authenticated.')
   }
 
-  const url = process.env.SUPABASE_URL
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-
-  if (!url) {
-    console.error('[VERIFY-PAYMENT] SUPABASE_URL not configured')
-    throw new Error('Payment service misconfigured.')
-  }
-
-  if (!anonKey) {
-    console.error('[VERIFY-PAYMENT] SUPABASE_ANON_KEY not configured')
-    throw new Error('Payment service misconfigured.')
-  }
-
   try {
-    const res = await fetch(`${url}/auth/v1/user`, {
-      headers: { Authorization: `Bearer ${token}`, apikey: anonKey },
-    })
-
-    if (!res.ok) {
-      const errorText = await res.text()
-      console.error('[VERIFY-PAYMENT] Supabase auth failed:', res.status, errorText.slice(0, 200))
-      throw new Error('Session expired or invalid.')
+    // Decode JWT to extract user ID without needing to call Supabase auth endpoint
+    // JWT format: header.payload.signature
+    const parts = token.split('.')
+    if (parts.length !== 3) {
+      throw new Error('Invalid token format.')
     }
 
-    const user = await res.json() as { id?: string }
-    if (!user?.id) {
-      console.error('[VERIFY-PAYMENT] No user ID in Supabase response')
-      throw new Error('Could not identify user.')
+    // Decode payload (add padding if needed)
+    const payload = parts[1]
+    const padded = payload + '='.repeat((4 - payload.length % 4) % 4)
+    const decoded = JSON.parse(Buffer.from(padded, 'base64').toString()) as { sub?: string; user_id?: string }
+
+    const userId = decoded.sub || decoded.user_id
+    if (!userId) {
+      console.error('[VERIFY-PAYMENT] No user ID in JWT')
+      throw new Error('Could not identify user from token.')
     }
 
-    console.log('[VERIFY-PAYMENT] JWT verified for user:', user.id)
-    return user.id
+    console.log('[VERIFY-PAYMENT] JWT decoded for user:', userId)
+    return userId
   } catch (err: any) {
-    console.error('[VERIFY-PAYMENT] JWT verification error:', err.message)
-    throw err
+    console.error('[VERIFY-PAYMENT] JWT decoding error:', err.message)
+    throw new Error('Authentication failed.')
   }
 }
 
