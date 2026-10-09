@@ -156,7 +156,9 @@ async function verifyCashfreePayment(orderId: string): Promise<{
 
   return {
     status: payment.payment_status || 'pending',
-    amount: payment.amount || 0,
+    amount: payment.payment_amount
+      ? Math.round(parseFloat(payment.payment_amount) * 100)
+      : payment.amount || 0,
     currency: payment.payment_currency || 'INR',
     paymentMethod: payment.payment_method,
   }
@@ -195,7 +197,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data: booking, error: bookingErr } = await db
       .from('bookings')
       .select(
-        'id, mentee_id, mentor_id, cashfree_order_id, payment_status, status, meet_link, service_title, start_at, end_at, timezone',
+        'id, mentee_id, mentor_id, cashfree_order_id, payment_status, status, meet_link, service_title, start_at, end_at, timezone, price_cents',
       )
       .eq('cashfree_order_id', orderId)
       .maybeSingle()
@@ -288,7 +290,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       endAt: booking.end_at,
       timezone: booking.timezone,
       meetLink: booking.meet_link || null,
-      amount: paymentInfo.amount,
+      amount: booking.price_cents,
       currency: paymentInfo.currency,
       error:
         paymentStatus === 'failed'
