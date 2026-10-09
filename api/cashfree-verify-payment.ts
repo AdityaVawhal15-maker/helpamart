@@ -128,7 +128,7 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   const successfulPayment = data.payments.find(
     (p: any) => {
       const status = p.payment_status ? p.payment_status.toUpperCase() : ''
-      // Accept multiple statuses that indicate successful payment
+      console.log(`[VERIFY-PAYMENT] Checking payment ${p.cf_payment_id}: status="${status}" - Match? SUCCESS=${status === 'SUCCESS'}, SETTLED=${status === 'SETTLED'}, AUTHORIZED=${status === 'AUTHORIZED'}, CHARGED=${status === 'CHARGED'}`)
       return status === 'SUCCESS' || 
              status === 'SETTLED' || 
              status === 'AUTHORIZED' ||
@@ -141,11 +141,11 @@ async function verifyCashfreePayment(orderId: string): Promise<{
       ? Math.round(parseFloat(successfulPayment.payment_amount) * 100)
       : successfulPayment.amount || 0
     const currency = successfulPayment.payment_currency || 'INR'
-    console.log('[VERIFY-PAYMENT] ✓ Successful payment found:', {
-      status: 'SUCCESS',
+    console.log('[VERIFY-PAYMENT] ✅ SUCCESSFUL payment found:', {
+      cf_payment_id: successfulPayment.cf_payment_id,
+      status: successfulPayment.payment_status,
       amount,
       currency,
-      payment_id: successfulPayment.cf_payment_id,
     })
     return { status: 'SUCCESS', amount, currency }
   }
@@ -154,6 +154,7 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   const failedPayment = data.payments.find(
     (p: any) => {
       const status = p.payment_status ? p.payment_status.toUpperCase() : ''
+      console.log(`[VERIFY-PAYMENT] Checking for failure ${p.cf_payment_id}: status="${status}" - Match? FAILED=${status === 'FAILED'}, CANCELLED=${status === 'CANCELLED'}, USER_DROPPED=${status === 'USER_DROPPED'}, DECLINED=${status === 'DECLINED'}`)
       return status === 'FAILED' || 
              status === 'CANCELLED' || 
              status === 'USER_DROPPED' ||
@@ -162,7 +163,7 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   )
 
   if (failedPayment) {
-    console.log('[VERIFY-PAYMENT] ✗ Failed payment found:', failedPayment.payment_status)
+    console.log('[VERIFY-PAYMENT] ❌ FAILED payment found:', failedPayment.payment_status)
     return { status: 'FAILED', amount: 0, currency: 'INR' }
   }
 
