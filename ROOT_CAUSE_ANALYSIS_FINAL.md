@@ -1,194 +1,246 @@
-# Cashfree "Unauthorized" 401 Error - Root Cause Analysis & Fix
+# ROOT CAUSE ANALYSIS — Why Payment Shows Pending
 
-## 🎯 Exact Root Cause Identified
+**Order:** BOOK-A185BCD1-1791560103932  
+**Production Response:** `paymentStatus: "pending"`, `amount: 9900`  
+**Cashfree UI Shows:** "₹99 Paid Successfully"  
 
-### The Problem
-User completes ₹99 Cashfree payment, Cashfree redirects to `/booking-payment-result?order_id=...`, but HELPAMART displays "Unauthorized" error.
+---
 
-### The Real Source of 401
-**NOT** the `/api/cashfree-verify-payment` endpoint.  
-**YES** the `/api/cashfree` endpoint's `verify-payment` action.
+## The Discrepancy
 
-### Why It Was Happening
+| System | Shows |
+|--------|-------|
+| **Cashfree Checkout UI** | ✅ "Paid Successfully" (green checkmark) |
+| **HELPAMART API Response** | ⏳ "Payment Pending" |
+| **Amount in Response** | ✅ 9900 (₹99 correct) |
 
-1. **CashfreeCheckout component** (frontend) calls `/api/cashfree` with:
-   ```json
-   {
-     "action": "verify-payment",
-     "orderId": "BOOK-DC067700-...",
-     "bookingId": "uuid-..."
-   }
-   ```
+This proves: **Cashfree's frontend and API are out of sync, OR our code doesn't recognize Cashfree's API status code**
 
-2. **The `/api/cashfree` endpoint** receives this request and calls `verifyJwt(req.headers.authorization)`
+---
 
-3. **The OLD `verifyJwt()` function** in `/api/cashfree.ts` was calling:
-   ```typescript
-   const res = await fetch(`${url}/auth/v1/user`, {
-     headers: { Authorization: `Bearer ${token}`, apikey: anonKey },
-   })
-   ```
+## Code Flow Analysis
 
-4. **If `SUPABASE_ANON_KEY` was NOT configured** in Vercel Production environment:
-   - `anonKey = ''` (empty string)
-   - Supabase rejects the request with 401
-   - Backend throws "Session expired. Please sign in again."
-   - Frontend displays "Error — Unauthorized"
-
-### Why This Wasn't Caught Earlier
-
-The `/api/cashfree-verify-payment` endpoint was ALSO created with the improved JWT verification, but:
-- It's called by the payment-result page AFTER Cashfree redirect
-- But it was only called if the initial CashfreeCheckout verification passed
-- The CashfreeCheckout component was still calling the OLD `/api/cashfree` endpoint
-- So the improved fix never had a chance to run
-
-### The Dependency Chain
-
+### Step 1: Frontend makes request
 ```
-Cashfree Payment Completed
-↓
-Cashfree Checkout redirects browser to /booking-payment-result?order_id=...
-↓
-BUT FIRST: CashfreeCheckout.openCheckout() calls /api/cashfree { action: 'verify-payment' }
-↓
-/api/cashfree endpoint calls verifyJwt() with OLD logic
-↓
-OLD verifyJwt() tries to call Supabase /auth/v1/user with SUPABASE_ANON_KEY
-↓
-SUPABASE_ANON_KEY is missing in Vercel Production
-↓
-401 "Session expired" thrown
-↓
-Frontend catches error, displays "Unauthorized"
-↓
-Page never reaches /booking-payment-result success page
+POST /api/cashfree-verify-payment
+Body: { orderId: "BOOK-A185BCD1-1791560103932" }
 ```
 
-## ✅ The Fix (Commit 3314948)
-
-Updated the `verifyJwt()` function in `/api/cashfree.ts` to use **LOCAL JWT decoding** instead of calling external Supabase endpoint:
-
-### Before (Broken)
+### Step 2: Backend queries Cashfree
 ```typescript
-async function verifyJwt(authHeader: string | undefined): Promise<string> {
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
-  if (!token) throw new Error('Not authenticated.')
+GET https://api.cashfree.com/pg/orders/BOOK-A185BCD1-1791560103932/payments
+Headers: x-client-id, x-client-secret, x-api-version: 2025-01-01
+```
 
-  const res = await fetch(`${url}/auth/v1/user`, {
-    headers: { Authorization: `Bearer ${token}`, apikey: anonKey },
-  })
-  if (!res.ok) throw new Error('Session expired. Please sign in again.')
-  // ...
+### Step 3: Cashfree returns (example)
+```json
+{
+  "payments": [
+    {
+      "cf_payment_id": "12345678",
+      "payment_status": "???",  // ← WHAT IS THIS VALUE?
+      "payment_amount": "99.00",
+      "payment_currency": "INR",
+      ...
+    }
+  ]
 }
 ```
 
-### After (Fixed)
+### Step 4: Code searches for success
+**In `verifyCashfreePayment()` function (lines 128-151):**
+
 ```typescript
-async function verifyJwt(authHeader: string | undefined): Promise<string> {
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
-  if (!token) throw new Error('Not authenticated.')
+const successfulPayment = data.payments.find((p: any) => {
+  const status = p.payment_status.toUpperCase()
+  return status === 'SUCCESS' || 
+         status === 'SETTLED' || 
+         status === 'AUTHORIZED' ||
+         status === 'CHARGED'
+})
+```
 
-  try {
-    // Decode JWT locally without external API call
-    const parts = token.split('.')
-    if (parts.length !== 3) {
-      throw new Error('Invalid token format.')
-    }
+**Question:** Does Cashfree return one of these statuses?
+- If YES → Function returns `{ status: 'SUCCESS', ... }` ✅
+- If NO → Continues to next check
 
-    const payload = parts[1]
-    const padded = payload + '='.repeat((4 - payload.length % 4) % 4)
-    const decoded = JSON.parse(Buffer.from(padded, 'base64').toString()) as { sub?: string; user_id?: string }
+### Step 5: Code searches for failure
+**Lines 157-171:**
 
-    const userId = decoded.sub || decoded.user_id
-    if (!userId) {
-      throw new Error('Could not identify user.')
-    }
+```typescript
+const failedPayment = data.payments.find((p: any) => {
+  const status = p.payment_status.toUpperCase()
+  return status === 'FAILED' || 
+         status === 'CANCELLED' || 
+         status === 'USER_DROPPED' ||
+         status === 'DECLINED'
+})
+```
 
-    return userId
-  } catch (err: any) {
-    throw new Error(err.message || 'Authentication failed.')
-  }
+**Question:** Does Cashfree return one of these statuses?
+- If YES → Function returns `{ status: 'FAILED', ... }` ❌
+- If NO → Continues to fallback
+
+### Step 6: Fallback for unknown status
+**Lines 178-190:**
+
+```typescript
+const payment = data.payments[0]
+console.log('[VERIFY-PAYMENT] → MAPPING TO: pending (default fallback)')
+return {
+  status: payment.payment_status || 'pending',  // ← RETURNS CASHFREE'S VALUE OR 'pending'
+  amount: payment.payment_amount ? Math.round(...) : 0,
+  currency: payment.payment_currency || 'INR',
+  paymentMethod: payment.payment_method,
 }
 ```
 
-### Why This Works
+### Step 7: Handler maps to application status
+**Lines 246-260:**
 
-✅ **No external API dependency** - JWT verification happens locally in the serverless function  
-✅ **No SUPABASE_ANON_KEY needed** - Doesn't call Supabase auth endpoint  
-✅ **Faster** - Local JWT decoding is instant, no network latency  
-✅ **More resilient** - Works even if Supabase is temporarily unavailable  
-✅ **Secure** - Still validates JWT format and extracts verified user ID  
+```typescript
+const cfStatus = paymentInfo.status.toUpperCase()  // What did Step 6 return?
 
-## 🧪 Expected Result After Fix
+if (cfStatus === 'SUCCESS' || cfStatus === 'SETTLED') {
+  paymentStatus = 'completed'  // ← Would need exact match
+} else if (cfStatus === 'FAILED' || cfStatus === 'CANCELLED' || ...) {
+  paymentStatus = 'failed'  // ← Would need exact match
+} else {
+  paymentStatus = 'pending'  // ← DEFAULT FALLTHROUGH
+}
+```
 
-When user completes ₹99 Cashfree payment:
+### Step 8: Response sent to frontend
+```json
+{
+  "paymentStatus": "pending",  // ← THIS IS THE RESULT
+  "amount": 9900,
+  "error": "Payment is still being processed..."
+}
+```
 
-1. Cashfree redirects to `/booking-payment-result?order_id=BOOK-DC067700-...`
-2. CashfreeCheckout component calls `/api/cashfree { action: 'verify-payment' }`
-3. JWT verification succeeds (local decode, no Supabase call)
-4. Backend queries Cashfree API for payment status
-5. If payment confirmed: booking marked as confirmed, Meet created
-6. Success page displays: "You're booked" with ₹99 Paid
-7. No 401 error
+---
 
-## 📊 Files Changed
+## Why It Returns Pending
 
-| File | Change |
-|------|--------|
-| `api/cashfree.ts` | Updated `verifyJwt()` to use local JWT decoding (same as cashfree-verify-payment) |
+**The code returns pending when:**
 
-## 🔍 Testing the Existing Transaction
+1. **Cashfree returns a status NOT in the success list** (SUCCESS, SETTLED, AUTHORIZED, CHARGED)
+   - Example: Cashfree returns `"INITIATED"` or `"PROCESSING"` or `"AUTHORIZING"`
+   - Our code doesn't recognize it → defaults to pending ⏳
 
-Order: `BOOK-DC067700-1791556844233`
+2. **OR Cashfree returns a status NOT in the failure list** (FAILED, CANCELLED, USER_DROPPED, DECLINED)
+   - It's not failure, so it passes through to the handler
+   - Handler doesn't recognize it → defaults to pending ⏳
 
-To recover and test:
-1. Navigate to: `https://helpamart.com/booking-payment-result?order_id=BOOK-DC067700-1791556844233`
-2. Should no longer see "Unauthorized" error
-3. Should see success page with booking details if Cashfree confirms payment
+3. **OR the payments array is empty**
+   - Line 108-110 in `verifyCashfreePayment()` returns `{ status: 'pending', ... }` directly ⏳
 
-## 🚨 What This Fixes
+---
 
-✅ 401 "Unauthorized" error after Cashfree payment  
-✅ "Session expired" error from JWT verification  
-✅ Payment verification failures due to missing SUPABASE_ANON_KEY  
-✅ Allows existing transaction recovery  
+## Most Likely Cause
 
-## 📝 Technical Details
+**Hypothesis:** Cashfree returns `"AUTHORIZED"` or similar intermediate status.
 
-### JWT Format
-JWTs have 3 parts: `header.payload.signature`
-- Header: Algorithm info
-- Payload: User ID in 'sub' claim, other metadata
-- Signature: Cryptographic signature
+Cashfree's payment flow:
+1. **User pays** → Frontend shows "Paid Successfully" ✅ (optimistic update)
+2. **Backend processes** → Status becomes AUTHORIZED (payment confirmed by bank)
+3. **Settlement** → Status becomes SUCCESS (money received)
 
-### Local Decoding Process
-1. Split token by '.'
-2. Base64 decode the payload section
-3. Parse JSON to extract claims
-4. Read 'sub' or 'user_id' claim
-5. Return verified user ID
+Our code DOES check for `AUTHORIZED`, so that should map to success... unless:
 
-No signature verification needed because:
-- Supabase already signed the token when issuing it
-- We trust tokens issued by our configured Supabase instance
-- We don't need to re-verify the signature, only extract the user ID
-- The booking ownership check later validates authorization
+**Alternative:** Cashfree returns a status code we don't list, like:
+- `"INITIATED"`
+- `"PROCESSING"`
+- `"PENDING_VBV"` (3D Secure pending)
+- `"CAPTURED"` (instead of SUCCESS)
+- Something else entirely
 
-## 🎯 Deployment Status
+---
 
-- ✅ Commit: 3314948
-- ✅ Pushed to origin/main
-- ⏳ Waiting for Vercel auto-deployment
-- ⏳ User should test `/booking-payment-result?order_id=...` after deployment
+## What The Diagnostics Will Show
 
-## 📞 If Still Seeing Error
+When the latest code (commit 75a73b4) runs with its enhanced logging:
 
-If user still sees "Unauthorized" after deployment:
+**In Vercel logs, you'll see:**
 
-1. Hard refresh browser (Cmd+Shift+R / Ctrl+Shift+R)
-2. Clear browser cache
-3. Check if Vercel deployed the latest commit
-4. Try signing out and signing back in
-5. Check Vercel function logs for JWT decoding errors
-6. Verify user is actually authenticated on HELPAMART
+```
+[VERIFY-PAYMENT] Raw Cashfree Response: {
+  "payments": [{
+    "cf_payment_id": "...",
+    "payment_status": "???",  ← THIS IS THE ANSWER
+    ...
+  }]
+}
+
+[VERIFY-PAYMENT] Checking payment ...: status="???" - Match? SUCCESS=false, SETTLED=false, AUTHORIZED=?, CHARGED=?
+```
+
+The exact value of `???` and the true/false results will reveal the cause.
+
+---
+
+## Possible Fixes (Depending on Cause)
+
+### Fix A: If Cashfree returns unrecognized status
+Add that status to the success/failure lists in `verifyCashfreePayment()`:
+
+```typescript
+// Example: if Cashfree returns "CAPTURED"
+return status === 'SUCCESS' ||  status === 'SETTLED' || status === 'CAPTURED'
+```
+
+### Fix B: If Cashfree returns settlement is pending
+Implement retry logic with exponential backoff:
+
+```typescript
+// Retry after 10 seconds if status is 'AUTHORIZING'
+// Retry after 30 seconds if status is 'PROCESSING'
+```
+
+### Fix C: If it's a database lookup issue
+Verify booking is found by cashfree_order_id:
+
+```typescript
+// Check: Does booking exist with cashfree_order_id = BOOK-A185BCD1-...?
+// Is it the correct booking for this user?
+```
+
+---
+
+## The Fix Process
+
+1. **Deploy commit 75a73b4** to Vercel
+2. **Test on production:** Load `/booking-payment-result?order_id=BOOK-A185BCD1-...`
+3. **Capture Vercel logs** and identify Cashfree's actual `payment_status` value
+4. **Based on value:**
+   - If it's SUCCESS/SETTLED/AUTHORIZED/CHARGED → look for OTHER bug (database update, JWT auth, etc.)
+   - If it's unknown status → add to recognized list
+   - If it's intermediate status → add to success list OR implement retry
+5. **Apply minimal fix**
+6. **Test again to verify payment now shows success**
+
+---
+
+## What's Already Fixed in Recent Commits
+
+✅ **Commit f36378b:** Amount now shows 9900 (was 0) — uses `booking.price_cents`  
+✅ **Commit 39ea632 & 75a73b4:** Enhanced logging to show exact Cashfree response  
+
+**Still needs investigation:** Why Cashfree returns pending despite showing "Paid Successfully"
+
+---
+
+## Critical Question for Production
+
+**What exact value does Cashfree return for `payment_status` when the checkout shows "Paid Successfully"?**
+
+Once we know this value, the fix is trivial (usually 1 line to add that status to the recognized list).
+
+The enhanced diagnostics will answer this question definitively.
+
+---
+
+**Current Status:** Awaiting production test data  
+**Latest Commit:** 75a73b4  
+**Next Action:** Deploy, test, capture logs showing exact Cashfree payment_status value

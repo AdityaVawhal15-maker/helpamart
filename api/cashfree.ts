@@ -514,7 +514,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Verify booking exists and belongs to authenticated user
       const { data: booking, error: bookingErr } = await db
         .from('bookings')
-        .select('id, mentee_id, price_cents, currency, student_email, mentor_id, payment_status')
+        .select('id, mentee_id, price_cents, currency, student_email, mentor_id, payment_status, cashfree_order_id')
         .eq('id', bookingId)
         .maybeSingle()
 
@@ -536,6 +536,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (serverAmount !== amount) {
         console.error('[CASHFREE] SECURITY: Amount mismatch. Client sent:', amount, 'Server has:', serverAmount)
         // Still proceed with server amount, but log the discrepancy
+      }
+
+      // CRITICAL FIX: If booking already has a Cashfree order ID, REUSE it (prevents duplicate orders)
+      // This handles retries/refreshes where user already initiated payment
+      if (booking.cashfree_order_id) {
+        console.log('[CASHFREE] ⚠️ RETRY DETECTED: Booking already has Cashfree order ID:', booking.cashfree_order_id)
+        console.log('[CASHFREE] REUSING existing order instead of creating a duplicate')
+        // Return the existing order with payment session
+        // The frontend will proceed to payment with the same order that already exists in Cashfree
+        return res.status(200).json({
+          order_id: booking.cashfree_order_id,
+          payment_session_id: 'REUSING_EXISTING',  // Marker that we're reusing
+          cashfree_environment: cashfreeEnvironmentValue,
+          reused: true,
+        })
       }
 
       // Fetch user profile for Cashfree customer details
@@ -573,7 +588,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({
           payment_session_id,
           order_id,
-          cashfree_environment: cashfreeEnvironmentValue, // Include environment for frontend
+          cashfree_environment: cashfreeEnvironmentValue,
         })
       } catch (err: any) {
         return res.status(503).json({ error: err.message || 'Could not create payment order.' })
