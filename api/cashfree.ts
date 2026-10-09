@@ -59,17 +59,19 @@ async function cashfreeRequest(
   const secretKey = process.env.CASHFREE_SECRET_KEY
   const environment = process.env.CASHFREE_ENVIRONMENT || 'sandbox'
 
-  // Select endpoint based on environment
-  const baseUrl = environment === 'production'
-    ? 'https://api.cashfree.com'
-    : 'https://sandbox.cashfree.com'
-
   if (!appId || !secretKey) {
     console.error('[CASHFREE] CRITICAL: CASHFREE_APP_ID or CASHFREE_SECRET_KEY not set')
     throw new Error('Payment service not configured.')
   }
 
-  console.log(`[CASHFREE] Environment: ${environment}, Endpoint: ${baseUrl}`)
+  // Select endpoint based on environment
+  const baseUrl = environment === 'production'
+    ? 'https://api.cashfree.com'
+    : 'https://sandbox.cashfree.com'
+
+  console.log(`[CASHFREE] Endpoint: ${baseUrl}/pg${endpoint}`)
+  console.log(`[CASHFREE] Environment: ${environment}`)
+  console.log(`[CASHFREE] Using App ID ending: ...${appId.slice(-8)}`)
 
   const url = `${baseUrl}/pg${endpoint}`
 
@@ -105,10 +107,13 @@ async function cashfreeRequest(
     const errorMsg = (json as any)?.message || (json as any)?.error || `HTTP ${res.status}`
     const errorCode = (json as any)?.code || 'UNKNOWN'
     console.error('[CASHFREE] API ERROR:')
-    console.error('  Status:', res.status)
-    console.error('  Code:', errorCode)
-    console.error('  Message:', errorMsg)
+    console.error('  Endpoint:', url)
+    console.error('  HTTP Status:', res.status)
+    console.error('  Error Code:', errorCode)
+    console.error('  Error Message:', errorMsg)
     console.error('  Response:', JSON.stringify(json))
+    console.error('  [DIAGNOSTIC] Environment:', process.env.CASHFREE_ENVIRONMENT || 'sandbox')
+    console.error('  [DIAGNOSTIC] Expected Auth Failure if environment/credentials mismatch')
     throw new Error(`Cashfree error (${res.status}): ${errorMsg}`)
   }
 
@@ -236,9 +241,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed.' })
 
   try {
+    // Validate Cashfree environment configuration
+    const cashfreeEnvironment = process.env.CASHFREE_ENVIRONMENT
+    
+    if (!cashfreeEnvironment) {
+      console.error('[CASHFREE] CRITICAL: CASHFREE_ENVIRONMENT not set')
+      console.error('[CASHFREE] Please configure CASHFREE_ENVIRONMENT in Vercel (sandbox or production)')
+      return res.status(500).json({ 
+        error: 'Payment service not properly configured. Please contact support.'
+      })
+    }
+
+    if (cashfreeEnvironment !== 'sandbox' && cashfreeEnvironment !== 'production') {
+      console.error('[CASHFREE] CRITICAL: CASHFREE_ENVIRONMENT has invalid value:', cashfreeEnvironment)
+      return res.status(500).json({ 
+        error: 'Payment service misconfigured. Please contact support.'
+      })
+    }
+
+    console.log(`[CASHFREE] Handler initialized - Environment: ${cashfreeEnvironment}`)
+    
     const userId = await verifyJwt(req.headers.authorization)
     const db = adminSupabase()
-    const cashfreeEnvironment = process.env.CASHFREE_ENVIRONMENT || 'sandbox'
+    const cashfreeEnvironmentValue = cashfreeEnvironment
 
     const { action, bookingId, amount, orderId } = req.body as {
       action?: string
@@ -457,7 +482,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           booking_id: provisionalBookingId,
           order_id,
           payment_session_id,
-          cashfree_environment: cashfreeEnvironment, // Include environment for frontend
+          cashfree_environment: cashfreeEnvironmentValue, // Include environment for frontend
         })
       } catch (err: any) {
         // Rollback provisional booking on Cashfree failure
@@ -537,7 +562,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({
           payment_session_id,
           order_id,
-          cashfree_environment: cashfreeEnvironment, // Include environment for frontend
+          cashfree_environment: cashfreeEnvironmentValue, // Include environment for frontend
         })
       } catch (err: any) {
         return res.status(503).json({ error: err.message || 'Could not create payment order.' })
