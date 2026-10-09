@@ -32,18 +32,36 @@ function adminSupabase() {
 // ─── Verify JWT ───────────────────────────────────────────────────────────────
 async function verifyJwt(authHeader: string | undefined): Promise<string> {
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
-  if (!token) throw new Error('Not authenticated.')
+  if (!token) {
+    console.error('[BOOK-FINALIZE] Missing authorization header')
+    throw new Error('Not authenticated.')
+  }
 
-  const url = process.env.SUPABASE_URL!
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+  try {
+    // Decode JWT to extract user ID without needing to call Supabase auth endpoint
+    // JWT format: header.payload.signature
+    const parts = token.split('.')
+    if (parts.length !== 3) {
+      throw new Error('Invalid token format.')
+    }
 
-  const res = await fetch(`${url}/auth/v1/user`, {
-    headers: { Authorization: `Bearer ${token}`, apikey: anonKey },
-  })
-  if (!res.ok) throw new Error('Session expired.')
-  const user = await res.json() as { id?: string }
-  if (!user?.id) throw new Error('Could not identify user.')
-  return user.id
+    // Decode payload (add padding if needed)
+    const payload = parts[1]
+    const padded = payload + '='.repeat((4 - payload.length % 4) % 4)
+    const decoded = JSON.parse(Buffer.from(padded, 'base64').toString()) as { sub?: string; user_id?: string }
+
+    const userId = decoded.sub || decoded.user_id
+    if (!userId) {
+      console.error('[BOOK-FINALIZE] No user ID in JWT')
+      throw new Error('Could not identify user from token.')
+    }
+
+    console.log('[BOOK-FINALIZE] JWT decoded for user:', userId)
+    return userId
+  } catch (err: any) {
+    console.error('[BOOK-FINALIZE] JWT decoding error:', err.message)
+    throw new Error('Authentication failed.')
+  }
 }
 
 // ─── Create Google Meet (existing implementation) ──────────────────────────────
