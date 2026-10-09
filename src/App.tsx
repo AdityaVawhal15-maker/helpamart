@@ -11,6 +11,7 @@ const MentorProfile = lazy(() => import('@/pages/MentorProfile'))
 const BecomeMentor = lazy(() => import('@/pages/BecomeMentor'))
 const OfferHelp = lazy(() => import('@/pages/OfferHelp'))
 const BookingFlow = lazy(() => import('@/pages/BookingFlow'))
+const BookingPaymentResult = lazy(() => import('@/pages/BookingPaymentResult'))
 const HowItWorks = lazy(() => import('@/pages/HowItWorks'))
 const Community = lazy(() => import('@/pages/Community'))
 const CommunityPost = lazy(() => import('@/pages/CommunityPost'))
@@ -69,6 +70,7 @@ export default function App() {
           <Route path="/find-mentor" element={<FindMentor />} />
           <Route path="/mentor/:slug" element={<MentorProfile />} />
           <Route path="/mentor/:slug/book" element={<BookingFlow />} />
+          <Route path="/booking-payment-result" element={<BookingPaymentResult />} />
           <Route path="/how-it-works" element={<HowItWorks />} />
           <Route path="/community" element={<Community />} />
           <Route path="/community/:id" element={<CommunityPost />} />
