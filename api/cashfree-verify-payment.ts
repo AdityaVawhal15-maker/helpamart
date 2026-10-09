@@ -75,7 +75,7 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   const res = await fetch(url, {
     method: 'GET',
     headers: {
-      'x-api-version': '2023-08-01',
+      'x-api-version': '2025-01-01',
       'x-client-id': appId,
       'x-client-secret': secretKey,
     },
@@ -95,10 +95,12 @@ async function verifyCashfreePayment(orderId: string): Promise<{
     return { status: 'pending', amount: 0, currency: 'INR' }
   }
 
-  // Get the most recent successful payment
+  // Get the most recent payment (first in array)
   const payment = data.payments[0]
 
-  console.log('[VERIFY-PAYMENT] Payment status:', payment.payment_status, 'Amount:', payment.amount)
+  console.log('[VERIFY-PAYMENT] Payment raw status:', payment.payment_status, 'Amount:', payment.amount)
+  console.log('[VERIFY-PAYMENT] Payment ID:', payment.cf_payment_id || 'unknown')
+  console.log('[VERIFY-PAYMENT] Total payments in order:', data.payments.length)
 
   return {
     status: payment.payment_status || 'pending',
@@ -161,12 +163,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Map Cashfree status to our payment status
     let paymentStatus = 'pending'
-    if (paymentInfo.status === 'SUCCESS' || paymentInfo.status === 'settled') {
+    const cfStatus = paymentInfo.status ? paymentInfo.status.toUpperCase() : ''
+    if (cfStatus === 'SUCCESS' || cfStatus === 'SETTLED') {
       paymentStatus = 'completed'
     } else if (
-      paymentInfo.status === 'FAILED' ||
-      paymentInfo.status === 'CANCELLED' ||
-      paymentInfo.status === 'USER_DROPPED'
+      cfStatus === 'FAILED' ||
+      cfStatus === 'CANCELLED' ||
+      cfStatus === 'USER_DROPPED'
     ) {
       paymentStatus = 'failed'
     }
