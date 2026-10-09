@@ -80,15 +80,22 @@ async function verifyCashfreePayment(orderId: string): Promise<{
 }> {
   const appId = process.env.CASHFREE_APP_ID
   const secretKey = process.env.CASHFREE_SECRET_KEY
+  const environment = process.env.CASHFREE_ENVIRONMENT || 'sandbox'
 
   if (!appId || !secretKey) {
     throw new Error('Cashfree credentials not configured.')
   }
 
-  // Use Live API endpoint (Production)
-  const url = `https://api.cashfree.com/pg/orders/${orderId}/payments`
+  // Use environment-aware endpoint (CRITICAL: must match order creation environment)
+  const baseUrl = environment === 'production'
+    ? 'https://api.cashfree.com'
+    : 'https://sandbox.cashfree.com'
+  
+  const url = `${baseUrl}/pg/orders/${orderId}/payments`
 
-  console.log('[VERIFY-PAYMENT] Querying Cashfree Live API:', url.split('/').slice(0, -2).join('/'))
+  console.log('[VERIFY-PAYMENT] Querying Cashfree API:', `${baseUrl}/pg/orders/{orderId}/payments`)
+  console.log('[VERIFY-PAYMENT] Environment:', environment)
+  console.log('[VERIFY-PAYMENT] Order ID:', orderId)
 
   const res = await fetch(url, {
     method: 'GET',
