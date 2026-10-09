@@ -101,31 +101,28 @@ async function verifyCashfreePayment(orderId: string): Promise<{
 
   const data = await res.json() as any
 
+  console.log('[VERIFY-PAYMENT] Cashfree HTTP Status:', res.status)
+  console.log('[VERIFY-PAYMENT] Raw Cashfree Response:', JSON.stringify(data, null, 2))
+
   if (!res.ok) {
     const errorMsg = data?.message || data?.error || 'Payment verification failed'
-    console.error('[VERIFY-PAYMENT] Cashfree API error:', res.status, errorMsg)
+    console.error('[VERIFY-PAYMENT] ❌ Cashfree API error:', res.status, errorMsg)
     throw new Error(errorMsg)
   }
 
   // Check if payments array exists and has at least one payment
   if (!data.payments || data.payments.length === 0) {
-    console.warn('[VERIFY-PAYMENT] No payments found for order:', orderId)
+    console.warn('[VERIFY-PAYMENT] ⚠️ No payments found for order:', orderId)
     return { status: 'pending', amount: 0, currency: 'INR' }
   }
 
   // Log all payment attempts for diagnostics - CRITICAL for debugging
-  console.log('[VERIFY-PAYMENT] === CASHFREE API RESPONSE ===')
-  console.log('[VERIFY-PAYMENT] Total payment attempts:', data.payments.length)
+  console.log('[VERIFY-PAYMENT] === CASHFREE PAYMENTS ARRAY ===')
+  console.log('[VERIFY-PAYMENT] Total attempts:', data.payments.length)
   data.payments.forEach((p: any, i: number) => {
-    console.log(`[VERIFY-PAYMENT] Attempt ${i + 1}:`)
-    console.log(`  - cf_payment_id: ${p.cf_payment_id}`)
-    console.log(`  - payment_status: ${p.payment_status}`)
-    console.log(`  - payment_amount: ${p.payment_amount}`)
-    console.log(`  - payment_currency: ${p.payment_currency}`)
-    console.log(`  - payment_method: ${p.payment_method}`)
-    console.log(`  - payment_time: ${p.payment_time}`)
+    console.log(`[VERIFY-PAYMENT] Attempt ${i + 1}:`, JSON.stringify(p, null, 2))
   })
-  console.log('[VERIFY-PAYMENT] === END CASHFREE RESPONSE ===')
+  console.log('[VERIFY-PAYMENT] === END PAYMENTS ARRAY ===')
 
   // Look for a successful payment in the entire array (not just the first one)
   const successfulPayment = data.payments.find(
@@ -171,9 +168,11 @@ async function verifyCashfreePayment(orderId: string): Promise<{
 
   // All other statuses are pending (or still processing)
   const payment = data.payments[0]
-  console.log('[VERIFY-PAYMENT] ⏳ No successful payment - all pending or processing')
-  console.log('[VERIFY-PAYMENT] First attempt status:', payment.payment_status, 'Total attempts:', data.payments.length)
-  console.log('[VERIFY-PAYMENT] First attempt ID:', payment.cf_payment_id || 'unknown')
+  console.log('[VERIFY-PAYMENT] ⏳ No successful/failed payment found')
+  console.log('[VERIFY-PAYMENT] First attempt payment_status:', payment.payment_status)
+  console.log('[VERIFY-PAYMENT] Total attempts:', data.payments.length)
+  console.log('[VERIFY-PAYMENT] First attempt cf_payment_id:', payment.cf_payment_id || 'unknown')
+  console.log('[VERIFY-PAYMENT] → MAPPING TO: pending (default fallback)')
 
   return {
     status: payment.payment_status || 'pending',
