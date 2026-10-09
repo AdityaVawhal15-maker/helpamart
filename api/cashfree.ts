@@ -402,10 +402,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       console.log('[CASHFREE] VERIFIED: Returning user (paid session allowed)')
 
-      // STEP 7: Create provisional booking (UNPAID STATE)
-      // Use status='pending' (allowed by constraint), payment_status='pending' to track payment state
-      const provisionalBookingId = crypto.randomUUID()
-      console.log('[CASHFREE] Creating provisional booking:', provisionalBookingId)
+      // STEP 7: Check if provisional booking already exists for this session (idempotency)
+      // If user navigates back and restarts payment, reuse existing booking
+      const { data: existingBooking, error: existingErr } = await db
+        .from('bookings')
+        .select('id, cashfree_order_id, payment_status')
+        .eq('mentee_id', userId)
+        .eq('mentor_id', mentorRow.id)
+        .eq('service_id', service.id)
+        .eq('start_at', start.toISOString())
+        .eq('payment_provider', 'cashfree')
+        .eq('payment_status', 'pending')
+        .maybeSingle()
+
+      if (existingErr) {
+        console.error('[CASHFREE] Error checking for existing booking:', existingErr.message)
+        // Continue with creating new booking if lookup fails
+      }
+
+      let provisionalBookingId: string
+      let existingCashfreeOrderId: string | null = null
+
+      if (existingBooking && existingBooking.cashfree_order_id) {
+        // REUSE existing booking
+        provisionalBookingId = existingBooking.id
+        existingCashfreeOrderId = existingBooking.cashfree_order_id
+        console.log('[CASHFREE] ⏳ RETRY DETECTED: Reusing existing pending booking:', provisionalBookingId)
+        console.log('[CASHFREE] Existing Cashfree order ID:', existingCashfreeOrderId)
+        
+        // Return existing order immediately - no need to create new one
+        return res.status(200).json({
+          booking_id: provisionalBookingId,
+          order_id: existingCashfreeOrderId,
+          payment_session_id: 'REUSING_EXISTING',
+          cashfree_environment: cashfreeEnvironmentValue,
+          reused: true,
+        })
+      }
+
+      // CREATE new provisional booking (no existing booking found)
+      provisionalBookingId = crypto.randomUUID()
+      console.log('[CASHFREE] Creating new provisional booking:', provisionalBookingId)
 
       const { error: bookingErr } = await db.from('bookings').insert({
         id: provisionalBookingId,
