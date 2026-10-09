@@ -113,6 +113,12 @@ async function verifyCashfreePayment(orderId: string): Promise<{
     return { status: 'pending', amount: 0, currency: 'INR' }
   }
 
+  // Log all payment attempts for diagnostics
+  console.log('[VERIFY-PAYMENT] Total payment attempts:', data.payments.length)
+  data.payments.forEach((p: any, i: number) => {
+    console.log(`[VERIFY-PAYMENT] Attempt ${i + 1}: status=${p.payment_status}, amount=${p.payment_amount}, id=${p.cf_payment_id}`)
+  })
+
   // Look for a successful payment in the entire array (not just the first one)
   const successfulPayment = data.payments.find(
     (p: any) => p.payment_status === 'SUCCESS' || p.payment_status === 'success'
@@ -123,7 +129,7 @@ async function verifyCashfreePayment(orderId: string): Promise<{
       ? Math.round(parseFloat(successfulPayment.payment_amount) * 100)
       : successfulPayment.amount || 0
     const currency = successfulPayment.payment_currency || 'INR'
-    console.log('[VERIFY-PAYMENT] Successful payment found:', {
+    console.log('[VERIFY-PAYMENT] ✓ Successful payment found:', {
       status: 'SUCCESS',
       amount,
       currency,
@@ -138,14 +144,15 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   )
 
   if (failedPayment) {
-    console.log('[VERIFY-PAYMENT] Failed payment found:', failedPayment.payment_status)
+    console.log('[VERIFY-PAYMENT] ✗ Failed payment found:', failedPayment.payment_status)
     return { status: 'FAILED', amount: 0, currency: 'INR' }
   }
 
   // All other statuses are pending (or still processing)
   const payment = data.payments[0]
-  console.log('[VERIFY-PAYMENT] Payment raw status:', payment.payment_status, 'Total payments:', data.payments.length)
-  console.log('[VERIFY-PAYMENT] Payment ID:', payment.cf_payment_id || 'unknown')
+  console.log('[VERIFY-PAYMENT] ⏳ No successful payment - all pending or processing')
+  console.log('[VERIFY-PAYMENT] First attempt status:', payment.payment_status, 'Total attempts:', data.payments.length)
+  console.log('[VERIFY-PAYMENT] First attempt ID:', payment.cf_payment_id || 'unknown')
 
   return {
     status: payment.payment_status || 'pending',
