@@ -17,6 +17,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Check, X, Clock, ArrowRight } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/context/AuthContext'
 import { Button } from '@/components/ui/Button'
 
 type PaymentState = 'loading' | 'verifying' | 'success' | 'failed' | 'pending' | 'error'
@@ -34,6 +35,7 @@ interface BookingDetails {
 export default function BookingPaymentResult() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const { user, loading: authLoading } = useAuth()
   const [state, setState] = useState<PaymentState>('loading')
   const [booking, setBooking] = useState<BookingDetails | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
@@ -47,10 +49,24 @@ export default function BookingPaymentResult() {
       return
     }
 
+    // Wait for auth context to load
+    if (authLoading) {
+      setState('loading')
+      return
+    }
+
+    // If user is not authenticated, prompt them to sign in
+    if (!user) {
+      setState('error')
+      setErrorMsg('Your session has expired. Please sign in to continue.')
+      return
+    }
+
     const verifyAndFinalize = async () => {
       setState('verifying')
 
       try {
+        // Get fresh session token
         const { data: { session } } = await supabase.auth.getSession()
         if (!session?.access_token) {
           setState('error')
@@ -59,7 +75,7 @@ export default function BookingPaymentResult() {
         }
 
         // Step 1: Call backend to verify payment with Cashfree
-        console.log('[PAYMENT-RESULT] Verifying payment for order:', orderId)
+        console.log('[PAYMENT-RESULT] Verifying payment for order:', orderId, 'user:', user.id)
 
         const verifyRes = await fetch('/api/cashfree-verify-payment', {
           method: 'POST',
@@ -73,7 +89,15 @@ export default function BookingPaymentResult() {
         if (!verifyRes.ok) {
           const errorData = await verifyRes.json().catch(() => ({}))
           const msg = (errorData as any).error || 'Failed to verify payment'
-          console.error('[PAYMENT-RESULT] Verification failed:', msg)
+          console.error('[PAYMENT-RESULT] Verification failed:', verifyRes.status, msg)
+          
+          // If 401, session might have expired, show retry option
+          if (verifyRes.status === 401) {
+            setState('error')
+            setErrorMsg('Session expired. Please refresh the page to try again.')
+            return
+          }
+          
           setState('error')
           setErrorMsg(msg)
           return
@@ -139,7 +163,7 @@ export default function BookingPaymentResult() {
     }
 
     verifyAndFinalize()
-  }, [orderId])
+  }, [orderId, user, authLoading])
 
   const fmt = (iso: string, tz: string) => {
     try {
@@ -299,8 +323,15 @@ export default function BookingPaymentResult() {
 
             <div className="flex flex-col gap-3">
               <Button
-                onClick={() => navigate('/dashboard/bookings')}
+                onClick={() => window.location.reload()}
                 variant="primary"
+                className="w-full"
+              >
+                Refresh & Try Again
+              </Button>
+              <Button
+                onClick={() => navigate('/dashboard/bookings')}
+                variant="outline-gold"
                 className="w-full"
               >
                 View Your Bookings

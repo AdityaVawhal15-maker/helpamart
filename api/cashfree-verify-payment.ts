@@ -39,18 +39,47 @@ function adminSupabase() {
 // ─── Verify JWT ───────────────────────────────────────────────────────────────
 async function verifyJwt(authHeader: string | undefined): Promise<string> {
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
-  if (!token) throw new Error('Not authenticated.')
+  if (!token) {
+    console.error('[VERIFY-PAYMENT] Missing authorization header')
+    throw new Error('Not authenticated.')
+  }
 
-  const url = process.env.SUPABASE_URL!
+  const url = process.env.SUPABASE_URL
   const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 
-  const res = await fetch(`${url}/auth/v1/user`, {
-    headers: { Authorization: `Bearer ${token}`, apikey: anonKey },
-  })
-  if (!res.ok) throw new Error('Session expired.')
-  const user = await res.json() as { id?: string }
-  if (!user?.id) throw new Error('Could not identify user.')
-  return user.id
+  if (!url) {
+    console.error('[VERIFY-PAYMENT] SUPABASE_URL not configured')
+    throw new Error('Payment service misconfigured.')
+  }
+
+  if (!anonKey) {
+    console.error('[VERIFY-PAYMENT] SUPABASE_ANON_KEY not configured')
+    throw new Error('Payment service misconfigured.')
+  }
+
+  try {
+    const res = await fetch(`${url}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: anonKey },
+    })
+
+    if (!res.ok) {
+      const errorText = await res.text()
+      console.error('[VERIFY-PAYMENT] Supabase auth failed:', res.status, errorText.slice(0, 200))
+      throw new Error('Session expired or invalid.')
+    }
+
+    const user = await res.json() as { id?: string }
+    if (!user?.id) {
+      console.error('[VERIFY-PAYMENT] No user ID in Supabase response')
+      throw new Error('Could not identify user.')
+    }
+
+    console.log('[VERIFY-PAYMENT] JWT verified for user:', user.id)
+    return user.id
+  } catch (err: any) {
+    console.error('[VERIFY-PAYMENT] JWT verification error:', err.message)
+    throw err
+  }
 }
 
 // ─── Verify payment with Cashfree Live API ────────────────────────────────────
@@ -121,7 +150,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.log('[VERIFY-PAYMENT] Request received')
 
   try {
-    const userId = await verifyJwt(req.headers.authorization)
+    let userId: string
+    try {
+      userId = await verifyJwt(req.headers.authorization)
+    } catch (authErr: any) {
+      console.error('[VERIFY-PAYMENT] Authentication failed:', authErr.message)
+      return res.status(401).json({ error: authErr.message || 'Authentication failed.' })
+    }
+
     const db = adminSupabase()
 
     const { orderId } = req.body as { orderId?: string }
