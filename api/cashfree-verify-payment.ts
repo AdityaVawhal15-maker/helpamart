@@ -109,7 +109,8 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   const data = await res.json() as any
 
   console.log('[VERIFY-PAYMENT] Cashfree HTTP Status:', res.status)
-  console.log('[VERIFY-PAYMENT] Raw Cashfree Response:', JSON.stringify(data, null, 2))
+  // Log only a sanitized summary — avoid dumping full payload in production
+  console.log('[VERIFY-PAYMENT] Raw response type:', Array.isArray(data) ? 'array' : typeof data)
 
   if (!res.ok) {
     const errorMsg = data?.message || data?.error || 'Payment verification failed'
@@ -117,25 +118,30 @@ async function verifyCashfreePayment(orderId: string): Promise<{
     throw new Error(errorMsg)
   }
 
-  // Check if payments array exists and has at least one payment
-  if (!data.payments || data.payments.length === 0) {
+  // ⚠️  CRITICAL FIX: Cashfree GET /pg/orders/{id}/payments returns a direct JSON
+  // array, NOT an object with a "payments" key.
+  // Before this fix: `data.payments` was always undefined → always returned pending.
+  const payments: any[] = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.payments)
+      ? data.payments
+      : []
+
+  if (payments.length === 0) {
     console.warn('[VERIFY-PAYMENT] ⚠️ No payments found for order:', orderId)
     return { status: 'pending', amount: 0, currency: 'INR' }
   }
 
-  // Log all payment attempts for diagnostics - CRITICAL for debugging
-  console.log('[VERIFY-PAYMENT] === CASHFREE PAYMENTS ARRAY ===')
-  console.log('[VERIFY-PAYMENT] Total attempts:', data.payments.length)
-  data.payments.forEach((p: any, i: number) => {
-    console.log(`[VERIFY-PAYMENT] Attempt ${i + 1}:`, JSON.stringify(p, null, 2))
+  // Log all payment attempts for diagnostics
+  console.log('[VERIFY-PAYMENT] Total payment attempts:', payments.length)
+  payments.forEach((p: any, i: number) => {
+    console.log(`[VERIFY-PAYMENT] Attempt ${i + 1}: cf_payment_id=${p.cf_payment_id} status=${p.payment_status} amount=${p.payment_amount}`)
   })
-  console.log('[VERIFY-PAYMENT] === END PAYMENTS ARRAY ===')
 
   // Look for a successful payment in the entire array (not just the first one)
-  const successfulPayment = data.payments.find(
+  const successfulPayment = payments.find(
     (p: any) => {
       const status = p.payment_status ? p.payment_status.toUpperCase() : ''
-      console.log(`[VERIFY-PAYMENT] Checking payment ${p.cf_payment_id}: status="${status}" - Match? SUCCESS=${status === 'SUCCESS'}, SETTLED=${status === 'SETTLED'}, AUTHORIZED=${status === 'AUTHORIZED'}, CHARGED=${status === 'CHARGED'}`)
       return status === 'SUCCESS' || 
              status === 'SETTLED' || 
              status === 'AUTHORIZED' ||
@@ -158,10 +164,9 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   }
 
   // Check for failed payments
-  const failedPayment = data.payments.find(
+  const failedPayment = payments.find(
     (p: any) => {
       const status = p.payment_status ? p.payment_status.toUpperCase() : ''
-      console.log(`[VERIFY-PAYMENT] Checking for failure ${p.cf_payment_id}: status="${status}" - Match? FAILED=${status === 'FAILED'}, CANCELLED=${status === 'CANCELLED'}, USER_DROPPED=${status === 'USER_DROPPED'}, DECLINED=${status === 'DECLINED'}`)
       return status === 'FAILED' || 
              status === 'CANCELLED' || 
              status === 'USER_DROPPED' ||
@@ -175,10 +180,10 @@ async function verifyCashfreePayment(orderId: string): Promise<{
   }
 
   // All other statuses are pending (or still processing)
-  const payment = data.payments[0]
+  const payment = payments[0]
   console.log('[VERIFY-PAYMENT] ⏳ No successful/failed payment found')
   console.log('[VERIFY-PAYMENT] First attempt payment_status:', payment.payment_status)
-  console.log('[VERIFY-PAYMENT] Total attempts:', data.payments.length)
+  console.log('[VERIFY-PAYMENT] Total attempts:', payments.length)
   console.log('[VERIFY-PAYMENT] First attempt cf_payment_id:', payment.cf_payment_id || 'unknown')
   console.log('[VERIFY-PAYMENT] → MAPPING TO: pending (default fallback)')
 
@@ -244,6 +249,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (booking.mentee_id !== userId) {
       console.warn('[VERIFY-PAYMENT] Unauthorized access attempt to booking:', booking.id)
       return res.status(403).json({ error: 'Unauthorized.' })
+    }
+
+    // IDEMPOTENCY: If booking is already confirmed, return success immediately
+    // (avoids re-querying Cashfree on retries after successful recovery)
+    if (booking.payment_status === 'completed' && booking.status === 'confirmed') {
+      console.log('[VERIFY-PAYMENT] Booking already confirmed — returning completed immediately:', booking.id)
+      const { data: mentor } = await db
+        .from('mentors')
+        .select('name')
+        .eq('id', booking.mentor_id)
+        .maybeSingle()
+
+      return res.status(200).json({
+        paymentStatus: 'completed',
+        bookingId: booking.id,
+        orderId,
+        mentorName: mentor?.name || 'Mentor',
+        serviceTitle: booking.service_title || 'Mentorship Session',
+        startAt: booking.start_at,
+        endAt: booking.end_at,
+        timezone: booking.timezone,
+        meetLink: booking.meet_link || null,
+        amount: booking.price_cents,
+        currency: 'INR',
+      })
     }
 
     // Check Cashfree for payment status

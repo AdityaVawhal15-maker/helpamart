@@ -131,8 +131,12 @@ async function queryCashfreeOrder(orderId: string) {
     }
   }
 
-  // Log payment attempts
-  const payments = paymentsData.payments || []
+  // ⚠️ CRITICAL: Cashfree returns a direct JSON array, NOT { payments: [...] }
+  const payments: any[] = Array.isArray(paymentsData)
+    ? paymentsData
+    : Array.isArray(paymentsData?.payments)
+      ? paymentsData.payments
+      : []
   console.log('[DIAGNOSTIC] Payment attempts found:', payments.length)
   payments.forEach((p: any, i: number) => {
     console.log(`[DIAGNOSTIC] Attempt ${i + 1}:`, {

@@ -261,7 +261,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data: booking, error: bookingErr } = await db
       .from('bookings')
       .select(
-        'id, mentee_id, mentor_id, service_title, start_at, end_at, timezone, mentor_email, student_email, payment_status, status',
+        'id, mentee_id, mentor_id, service_title, start_at, end_at, timezone, mentor_email, student_email, payment_status, status, meet_link',
       )
       .eq('id', bookingId)
       .maybeSingle()
@@ -306,59 +306,70 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       mentorEmail = mentorProfile?.email
     }
 
-    // Create Google Meet space
-    console.log('[FINALIZE] Creating Google Meet space...')
-    const creds = await getCentralMeetCredentials(db)
-    const accessToken = await getGoogleAccessToken(creds)
-    const { meetUrl } = await createGoogleMeetSpace(accessToken)
+    // Create (or reuse existing) Google Meet space — idempotent
+    let meetUrl: string
+    if (booking.meet_link) {
+      // Reuse existing Meet link — do not create a duplicate space
+      meetUrl = booking.meet_link
+      console.log('[FINALIZE] Reusing existing Meet link:', meetUrl.slice(0, 30) + '...')
+    } else {
+      console.log('[FINALIZE] Creating Google Meet space...')
+      const creds = await getCentralMeetCredentials(db)
+      const accessToken = await getGoogleAccessToken(creds)
+      ;({ meetUrl } = await createGoogleMeetSpace(accessToken))
+      console.log('[FINALIZE] Google Meet created:', meetUrl.slice(0, 30) + '...')
 
-    console.log('[FINALIZE] Google Meet created:', meetUrl.slice(0, 30) + '...')
+      // Save Meet link to booking
+      await db
+        .from('bookings')
+        .update({ meet_link: meetUrl, updated_at: new Date().toISOString() })
+        .eq('id', bookingId)
+    }
 
-    // Save Meet link to booking
-    await db
-      .from('bookings')
-      .update({ meet_link: meetUrl, updated_at: new Date().toISOString() })
-      .eq('id', bookingId)
+    // Send confirmation emails and notifications only on FIRST finalization
+    // (i.e. when the Meet link was not previously set — avoids duplicate sends on retry)
+    if (!booking.meet_link) {
+      console.log('[FINALIZE] Sending confirmation emails...')
+      await sendEmails({
+        bookingId,
+        mentorName,
+        mentorEmail: mentorEmail || booking.mentor_email,
+        menteeName,
+        menteeEmail,
+        serviceTitle: booking.service_title || 'Mentorship Session',
+        startAt: booking.start_at,
+        endAt: booking.end_at,
+        timezone: booking.timezone,
+        meetUrl,
+      })
 
-    // Send confirmation emails
-    console.log('[FINALIZE] Sending confirmation emails...')
-    await sendEmails({
-      bookingId,
-      mentorName,
-      mentorEmail: mentorEmail || booking.mentor_email,
-      menteeName,
-      menteeEmail,
-      serviceTitle: booking.service_title || 'Mentorship Session',
-      startAt: booking.start_at,
-      endAt: booking.end_at,
-      timezone: booking.timezone,
-      meetUrl,
-    })
+      console.log('[FINALIZE] Booking finalized:', bookingId)
 
-    console.log('[FINALIZE] Booking finalized:', bookingId)
-
-    // Create in-app notifications with real Meet URL
-    try {
-      const notifications = [
-        {
-          user_id: userId,
-          title: 'Session Ready',
-          message: `Your session with ${mentorName} is ready. Join the Google Meet at the scheduled time.`,
-          link: meetUrl,
-        },
-      ]
-      if (mentor?.user_id) {
-        notifications.push({
-          user_id: mentor.user_id,
-          title: 'Session Ready',
-          message: `Your session is ready. Join the Google Meet at the scheduled time.`,
-          link: meetUrl,
-        })
+      // Create in-app notifications with real Meet URL
+      try {
+        const notifications = [
+          {
+            user_id: userId,
+            title: 'Session Ready',
+            message: `Your session with ${mentorName} is ready. Join the Google Meet at the scheduled time.`,
+            link: meetUrl,
+          },
+        ]
+        if (mentor?.user_id) {
+          notifications.push({
+            user_id: mentor.user_id,
+            title: 'Session Ready',
+            message: `Your session is ready. Join the Google Meet at the scheduled time.`,
+            link: meetUrl,
+          })
+        }
+        await db.from('notifications').insert(notifications)
+        console.log('[FINALIZE] Notifications created with Meet URL')
+      } catch (notifErr: any) {
+        console.warn('[FINALIZE] Notification creation error:', notifErr?.message)
       }
-      await db.from('notifications').insert(notifications)
-      console.log('[FINALIZE] Notifications created with Meet URL')
-    } catch (notifErr: any) {
-      console.warn('[FINALIZE] Notification creation error:', notifErr?.message)
+    } else {
+      console.log('[FINALIZE] Retry detected — Meet link already existed; skipping email/notification resend')
     }
 
     return res.status(200).json({
