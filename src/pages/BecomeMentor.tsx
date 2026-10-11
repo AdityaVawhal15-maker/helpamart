@@ -330,16 +330,21 @@ export default function BecomeMentor() {
   async function handlePublish() {
     setPublishing(true)
     try {
+      console.log('[MENTOR] Starting publish flow - calling saveMentorProfile')
       const saved = await saveMentorProfile({ status: 'published' })
+      console.log('[MENTOR] saveMentorProfile returned mentor.status:', saved.status)
       let slug = saved.slug
       try {
         const res = await api<{ mentor: { slug: string } }>('/api/mentor/publish', { method: 'POST' })
         if (res?.mentor?.slug) slug = res.mentor.slug
       } catch {}
+      console.log('[MENTOR] Calling refresh() to reload mentor state')
       await refresh()
+      console.log('[MENTOR] refresh() complete, setting publishResult')
       setPublishResult({ slug })
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (err: unknown) {
+      console.error('[MENTOR] Publish failed:', err)
       toast((err as Error).message || 'Could not publish. Ensure all required fields are filled.', 'error')
     } finally {
       setPublishing(false)

@@ -168,6 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq('user_id', sbUser.id)
         .maybeSingle()
       if (!error && data) {
+        console.log('[AUTH] loadUserAndProfile - mentor from DB status:', data.status)
         resolvedMentor = {
           id: data.id,
           slug: data.slug,
@@ -215,6 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {}
     }
 
+    console.log('[AUTH] loadUserAndProfile complete - final mentor.status:', resolvedMentor?.status)
     setUser(resolvedUser)
     setMentor(resolvedMentor)
   }
@@ -319,11 +321,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   async function refresh() {
     try {
+      console.log('[AUTH] refresh() starting - will force reload from Supabase')
       const {
         data: { session },
       } = await supabase.auth.getSession()
       if (session?.user) {
         await loadUserAndProfile(session.user, true)
+        console.log('[AUTH] refresh() complete - mentor status is now:', mentor?.status)
       } else {
         setUser(null)
         setMentor(null)
@@ -398,6 +402,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   async function saveMentorProfile(mentorUpdates: Partial<Mentor>): Promise<Mentor> {
     if (!user) throw new Error('Not authenticated')
+
+    console.log('[AUTH] saveMentorProfile called with updates:', mentorUpdates)
 
     const existing = mentor || {
       id: crypto.randomUUID(),
@@ -543,6 +549,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       syncPublicMentor(merged)
     }
 
+    console.log('[AUTH] saveMentorProfile complete - setting mentor to:', merged)
+    console.log('[AUTH] merged.status =', merged.status)
     setMentor(merged)
     return merged
   }
