@@ -157,10 +157,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(`${PROFILE_KEY_PREFIX}${sbUser.id}`, JSON.stringify(resolvedUser))
     } catch {}
 
-    // 5. Mentor profile lookup
-    let resolvedMentor: Mentor | null = cachedMentor
+    // 5. Mentor profile lookup - ALWAYS prefer Supabase DB over cache
+    let resolvedMentor: Mentor | null = null
 
-    // Try Supabase DB mentors table
+    // Try Supabase DB mentors table (source of truth for all mentors)
     try {
       const { data, error } = await supabase
         .from('mentors')
@@ -202,9 +202,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch {}
 
-    // Also check Supabase user metadata for mentor profile
+    // Fallback: Check Supabase user metadata for mentor profile (if DB query failed)
     if (!resolvedMentor && sbUser.user_metadata?.mentor_profile) {
+      console.log('[AUTH] loadUserAndProfile - using mentor from auth metadata')
       resolvedMentor = sbUser.user_metadata.mentor_profile as Mentor
+    }
+
+    // Final fallback: Use localStorage cache only if both Supabase sources failed
+    if (!resolvedMentor && cachedMentor) {
+      console.log('[AUTH] loadUserAndProfile - using cached mentor from localStorage (warning: may be stale)')
+      resolvedMentor = cachedMentor
     }
 
     if (resolvedMentor) {
@@ -537,6 +544,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error('[AUTH] Supabase mentors upsert failed:', upsertError)
         throw new Error(`Profile could not be saved to the database: ${upsertError.message}`)
       }
+      console.log('[AUTH] Supabase mentors upsert succeeded with status:', merged.status)
     } catch (e: any) {
       if (e?.message?.startsWith('Profile could not be saved')) {
         throw e
