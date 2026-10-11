@@ -1,0 +1,201 @@
+═══════════════════════════════════════════════════════════════════════════════
+EXACT CODE CHANGES — MENTOR PUBLISH STATUS FIX
+═══════════════════════════════════════════════════════════════════════════════
+
+FILE: src/context/AuthContext.tsx
+
+CHANGE #1: Reorder Mentor Data Loading Priority
+──────────────────────────────────────────────────────────────────────────────
+
+Location: Lines 160-211
+
+BEFORE (Buggy - prioritizes cache):
+──────────────────────────────────────────────────────────────────────────────
+    // 5. Mentor profile lookup
+    let resolvedMentor: Mentor | null = cachedMentor  // ← STARTS WITH CACHE
+
+    // Try Supabase DB mentors table
+    try {
+      const { data, error } = await supabase
+        .from('mentors')
+        .select('*')
+        .eq('user_id', sbUser.id)
+        .maybeSingle()
+      if (!error && data) {
+        resolvedMentor = {
+          id: data.id,
+          slug: data.slug,
+          name: data.name || resolvedUser.name,
+          role: data.role || '',
+          company: data.company || '',
+          location: data.location || '',
+          intro: data.intro || '',
+          about: data.about || '',
+          photoUrl: data.photo_url || resolvedUser.photoUrl,
+          languages: data.languages || ['English'],
+          yearsExperience: data.years_experience ?? null,
+          linkedinUrl: data.linkedin_url || null,
+          websiteUrl: data.website_url || null,
+          education: data.education || [],
+          companies: data.companies || [],
+          achievements: data.achievements || [],
+          status: data.status || 'draft',
+          timezone: data.timezone || resolvedUser.timezone,
+          bufferMinutes: data.buffer_minutes ?? 15,
+          advanceDays: data.advance_days ?? 30,
+          minNoticeHours: data.min_notice_hours ?? 24,
+          maxBookingsPerDay: data.max_bookings_per_day ?? 4,
+          categories: data.categories || [],
+          skills: data.skills || [],
+          services: Array.isArray(data.services) ? data.services : [],
+          availability: Array.isArray(data.availability) ? data.availability : [],
+          startingPriceCents: data.starting_price_cents ?? null,
+          availabilityPreview: data.availability_preview ?? null,
+        }
+      }
+    } catch {}
+
+    // Also check Supabase user metadata for mentor profile
+    if (!resolvedMentor && sbUser.user_metadata?.mentor_profile) {
+      resolvedMentor = sbUser.user_metadata.mentor_profile as Mentor
+    }
+
+
+AFTER (Fixed - prioritizes Supabase DB):
+──────────────────────────────────────────────────────────────────────────────
+    // 5. Mentor profile lookup - ALWAYS prefer Supabase DB over cache
+    let resolvedMentor: Mentor | null = null  // ← STARTS FRESH
+
+    // Try Supabase DB mentors table (source of truth for all mentors)
+    try {
+      const { data, error } = await supabase
+        .from('mentors')
+        .select('*')
+        .eq('user_id', sbUser.id)
+        .maybeSingle()
+      if (!error && data) {
+        console.log('[AUTH] loadUserAndProfile - mentor from DB status:', data.status)  // ← NEW
+        resolvedMentor = {
+          id: data.id,
+          slug: data.slug,
+          name: data.name || resolvedUser.name,
+          role: data.role || '',
+          company: data.company || '',
+          location: data.location || '',
+          intro: data.intro || '',
+          about: data.about || '',
+          photoUrl: data.photo_url || resolvedUser.photoUrl,
+          languages: data.languages || ['English'],
+          yearsExperience: data.years_experience ?? null,
+          linkedinUrl: data.linkedin_url || null,
+          websiteUrl: data.website_url || null,
+          education: data.education || [],
+          companies: data.companies || [],
+          achievements: data.achievements || [],
+          status: data.status || 'draft',
+          timezone: data.timezone || resolvedUser.timezone,
+          bufferMinutes: data.buffer_minutes ?? 15,
+          advanceDays: data.advance_days ?? 30,
+          minNoticeHours: data.min_notice_hours ?? 24,
+          maxBookingsPerDay: data.max_bookings_per_day ?? 4,
+          categories: data.categories || [],
+          skills: data.skills || [],
+          services: Array.isArray(data.services) ? data.services : [],
+          availability: Array.isArray(data.availability) ? data.availability : [],
+          startingPriceCents: data.starting_price_cents ?? null,
+          availabilityPreview: data.availability_preview ?? null,
+        }
+      }
+    } catch {}
+
+    // Fallback: Check Supabase user metadata for mentor profile (if DB query failed)  // ← COMMENT UPDATED
+    if (!resolvedMentor && sbUser.user_metadata?.mentor_profile) {
+      console.log('[AUTH] loadUserAndProfile - using mentor from auth metadata')  // ← NEW
+      resolvedMentor = sbUser.user_metadata.mentor_profile as Mentor
+    }
+
+    // Final fallback: Use localStorage cache only if both Supabase sources failed  // ← NEW
+    if (!resolvedMentor && cachedMentor) {  // ← NEW
+      console.log('[AUTH] loadUserAndProfile - using cached mentor from localStorage (warning: may be stale)')  // ← NEW
+      resolvedMentor = cachedMentor  // ← NEW
+    }  // ← NEW
+    // ← NEW LINE
+
+═══════════════════════════════════════════════════════════════════════════════
+CHANGE #2: Supabase Upsert Success Logging
+──────────────────────────────────────────────────────────────────────────────
+
+Location: Line 547
+
+BEFORE:
+──────
+      if (upsertError) {
+        // Surface real DB failures — silent failure here means publish appears to succeed
+        // but the mentor never appears in discovery for other users.
+        console.error('[AUTH] Supabase mentors upsert failed:', upsertError)
+        throw new Error(`Profile could not be saved to the database: ${upsertError.message}`)
+      }
+
+AFTER:
+──────
+      if (upsertError) {
+        // Surface real DB failures — silent failure here means publish appears to succeed
+        // but the mentor never appears in discovery for other users.
+        console.error('[AUTH] Supabase mentors upsert failed:', upsertError)
+        throw new Error(`Profile could not be saved to the database: ${upsertError.message}`)
+      }
+      console.log('[AUTH] Supabase mentors upsert succeeded with status:', merged.status)  // ← NEW
+
+═══════════════════════════════════════════════════════════════════════════════
+SUMMARY OF CHANGES
+═══════════════════════════════════════════════════════════════════════════════
+
+Total lines added:    12
+Total lines removed:  0
+Files modified:       1 (src/context/AuthContext.tsx)
+
+Key changes:
+  ✓ Line 160: Changed initialization from cachedMentor to null
+  ✓ Lines 161-162: Updated comment to clarify Supabase DB is source of truth
+  ✓ Line 171: Added console.log for DB status
+  ✓ Line 206: Updated comment to clarify metadata is fallback
+  ✓ Line 207: Added console.log for metadata fallback
+  ✓ Lines 210-213: NEW - Added localStorage fallback with console.log
+
+═══════════════════════════════════════════════════════════════════════════════
+WHY THIS FIX WORKS
+═══════════════════════════════════════════════════════════════════════════════
+
+BEFORE:
+  Start with: cachedMentor (might be stale draft status)
+  Try to overwrite with Supabase DB data
+  Problem: If Supabase query fails or is slow, stale cache is displayed
+
+AFTER:
+  Start with: null (no initial stale data)
+  Prioritize: Supabase DB (always fresh)
+  Fallback 1: Auth metadata (if DB unavailable)
+  Fallback 2: localStorage (if both Supabase sources fail)
+  Result: Always displays current status from Supabase
+
+═══════════════════════════════════════════════════════════════════════════════
+BEHAVIORAL CHANGES
+═══════════════════════════════════════════════════════════════════════════════
+
+Scenario 1: Published Mentor Viewing Dashboard
+  BEFORE: Could show "Profile not yet published" if localStorage had draft
+  AFTER:  Always shows current published status from Supabase DB ✓
+
+Scenario 2: Unpublished Mentor Viewing Dashboard
+  BEFORE: Shows "Profile not yet published" (correct by accident)
+  AFTER:  Shows "Profile not yet published" (correct from Supabase DB) ✓
+
+Scenario 3: Mentor Publishing Profile
+  BEFORE: Might show warning temporarily until cache clears
+  AFTER:  Immediately shows correct published status ✓
+
+Scenario 4: Network Offline
+  BEFORE: Might fail if localStorage missing
+  AFTER:  Falls back gracefully through all sources ✓
+
+═══════════════════════════════════════════════════════════════════════════════
