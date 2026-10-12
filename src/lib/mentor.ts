@@ -46,29 +46,39 @@ export async function getMentorStats(mentorId: string): Promise<{
   try {
     const now = new Date().toISOString()
 
-    // Upcoming sessions (confirmed/pending, future)
+    // Upcoming sessions (confirmed only, not pending - future sessions)
     const { count: upcomingCount, error: upcomingError } = await supabase
       .from('bookings')
       .select('id', { count: 'exact' })
       .eq('mentor_id', mentorId)
-      .in('status', ['confirmed', 'pending'])
+      .eq('status', 'confirmed')
       .gt('start_at', now)
 
     if (upcomingError) throw upcomingError
 
-    // Completed sessions
+    // Completed sessions (only those with completed status and completed_at set)
     const { count: completedCount, error: completedError } = await supabase
       .from('bookings')
       .select('id', { count: 'exact' })
       .eq('mentor_id', mentorId)
       .eq('status', 'completed')
+      .not('completed_at', 'is', null)
 
     if (completedError) throw completedError
+
+    // Profile views (unique count from profile_views table)
+    const { data: mentorData, error: mentorError } = await supabase
+      .from('mentors')
+      .select('profile_view_count')
+      .eq('id', mentorId)
+      .maybeSingle()
+
+    if (mentorError) throw mentorError
 
     return {
       upcomingSessions: upcomingCount || 0,
       completedSessions: completedCount || 0,
-      profileViews: 0, // TODO: implement profile view tracking if needed
+      profileViews: mentorData?.profile_view_count || 0,
     }
   } catch (err) {
     console.error('[Mentor] getMentorStats error:', err)
@@ -188,6 +198,187 @@ export async function getMentorProfile(mentorId: string): Promise<MentorProfile 
   } catch (err) {
     console.error('[Mentor] getMentorProfile error:', err)
     return null
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// RECORD Profile View (with deduplication: 1 view per visitor per hour)
+// ─────────────────────────────────────────────────────────────────
+
+export async function recordProfileView(mentorId: string): Promise<boolean> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    const visitorId = session?.user?.id || null
+
+    // Check if visitor already viewed this mentor in the last hour
+    if (visitorId) {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+      const { data: recentView, error: checkError } = await supabase
+        .from('profile_views')
+        .select('id')
+        .eq('mentor_id', mentorId)
+        .eq('visitor_id', visitorId)
+        .gt('viewed_at', oneHourAgo)
+        .maybeSingle()
+
+      if (checkError) throw checkError
+
+      // Already viewed in last hour, don't record duplicate
+      if (recentView) {
+        return false
+      }
+    }
+
+    // Get visitor info if authenticated
+    let visitorName: string | null = null
+    let visitorAvatarUrl: string | null = null
+
+    if (visitorId) {
+      try {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('full_name, avatar_url')
+          .eq('id', visitorId)
+          .maybeSingle()
+
+        if (!profileError && profile) {
+          visitorName = profile.full_name
+          visitorAvatarUrl = profile.avatar_url
+        }
+      } catch {}
+    }
+
+    // Record the profile view
+    const { error: insertError } = await supabase
+      .from('profile_views')
+      .insert({
+        mentor_id: mentorId,
+        visitor_id: visitorId,
+        visitor_name: visitorName,
+        visitor_avatar_url: visitorAvatarUrl,
+        viewed_at: new Date().toISOString(),
+      })
+
+    if (insertError) throw insertError
+
+    // Increment mentor's profile_view_count
+    const { data: mentor, error: mentorFetchError } = await supabase
+      .from('mentors')
+      .select('profile_view_count')
+      .eq('id', mentorId)
+      .maybeSingle()
+
+    if (mentorFetchError) throw mentorFetchError
+
+    const newCount = (mentor?.profile_view_count || 0) + 1
+
+    const { error: updateError } = await supabase
+      .from('mentors')
+      .update({ profile_view_count: newCount })
+      .eq('id', mentorId)
+
+    if (updateError) throw updateError
+
+    return true
+  } catch (err) {
+    console.error('[Mentor] recordProfileView error:', err)
+    return false
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// GET Profile Views/Visitors for a Mentor
+// ─────────────────────────────────────────────────────────────────
+
+export interface ProfileVisitor {
+  id: string
+  visitorId: string | null
+  visitorName: string | null
+  visitorAvatarUrl: string | null
+  viewedAt: string
+}
+
+export async function getMentorProfileVisitors(
+  mentorId: string,
+  limit: number = 20
+): Promise<ProfileVisitor[]> {
+  try {
+    const { data, error } = await supabase
+      .from('profile_views')
+      .select('id, visitor_id, visitor_name, visitor_avatar_url, viewed_at')
+      .eq('mentor_id', mentorId)
+      .order('viewed_at', { ascending: false })
+      .limit(limit)
+
+    if (error) throw error
+
+    return (data || []).map((view: any) => ({
+      id: view.id,
+      visitorId: view.visitor_id,
+      visitorName: view.visitor_name || 'Anonymous Visitor',
+      visitorAvatarUrl: view.visitor_avatar_url,
+      viewedAt: view.viewed_at,
+    }))
+  } catch (err) {
+    console.error('[Mentor] getMentorProfileVisitors error:', err)
+    return []
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MARK Booking as Completed
+// ─────────────────────────────────────────────────────────────────
+
+export async function markBookingCompleted(bookingId: string): Promise<boolean> {
+  try {
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+    if (sessionError || !session?.user?.id) {
+      throw new Error('Not authenticated')
+    }
+
+    // Verify the booking belongs to the authenticated mentor
+    const { data: booking, error: fetchError } = await supabase
+      .from('bookings')
+      .select('mentor_id, status, completed_at')
+      .eq('id', bookingId)
+      .maybeSingle()
+
+    if (fetchError) throw fetchError
+    if (!booking) throw new Error('Booking not found')
+
+    // Verify mentor ownership through join
+    const { data: mentor, error: mentorError } = await supabase
+      .from('mentors')
+      .select('user_id')
+      .eq('id', booking.mentor_id)
+      .maybeSingle()
+
+    if (mentorError) throw mentorError
+    if (!mentor || mentor.user_id !== session.user.id) {
+      throw new Error('Unauthorized: cannot complete another mentor booking')
+    }
+
+    // Don't mark as completed twice
+    if (booking.status === 'completed' && booking.completed_at) {
+      return false
+    }
+
+    // Mark as completed
+    const { error: updateError } = await supabase
+      .from('bookings')
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', bookingId)
+
+    if (updateError) throw updateError
+
+    return true
+  } catch (err) {
+    console.error('[Mentor] markBookingCompleted error:', err)
+    return false
   }
 }
 

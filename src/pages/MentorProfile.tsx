@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
+import { recordProfileView } from '@/lib/mentor'
 import { ProfileSkeleton, CalendarSkeleton } from '@/components/ui/LoadingSkeleton'
 import type { Mentor, MentorService } from '@/types'
 
@@ -96,6 +97,11 @@ export default function MentorProfile() {
 
         setMentor(mentor)
         if (mentor.services.length > 0) setSelectedService(mentor.services[0])
+        
+        // Record profile view (with deduplication: 1 per visitor per hour)
+        recordProfileView(mentor.id).catch(err => {
+          console.error('[MentorProfile] Failed to record view:', err)
+        })
       } catch (err) {
         console.error('[MentorProfile] Unexpected error:', err)
         navigate('/find-mentor', { replace: true })

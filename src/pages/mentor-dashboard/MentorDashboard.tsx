@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Calendar, Settings, User, Eye, BarChart3, Clock } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
-import { getMentorStats } from '@/lib/mentor'
+import { getMentorStats, getMentorProfileVisitors, type ProfileVisitor } from '@/lib/mentor'
 
 const NAV = [
   { to: '/mentor-dashboard', label: 'Overview', icon: <BarChart3 className="h-4 w-4" />, end: true },
@@ -17,6 +18,8 @@ export default function MentorDashboard() {
   const { user, mentor, loading } = useAuth()
   const navigate = useNavigate()
   const [stats, setStats] = useState({ upcoming: 0, completed: 0, views: 0 })
+  const [visitors, setVisitors] = useState<ProfileVisitor[]>([])
+  const [loadingVisitors, setLoadingVisitors] = useState(false)
 
   useEffect(() => {
     if (loading) return
@@ -29,6 +32,7 @@ export default function MentorDashboard() {
       return
     }
 
+    // Initial stats load
     getMentorStats(mentor.id)
       .then((data) => {
         setStats({
@@ -41,6 +45,72 @@ export default function MentorDashboard() {
         console.error('Failed to load mentor stats:', err)
         setStats({ upcoming: 0, completed: 0, views: 0 })
       })
+
+    // Load profile visitors
+    setLoadingVisitors(true)
+    getMentorProfileVisitors(mentor.id, 10)
+      .then(setVisitors)
+      .catch(err => {
+        console.error('Failed to load profile visitors:', err)
+        setVisitors([])
+      })
+      .finally(() => setLoadingVisitors(false))
+
+    // Setup Realtime subscriptions for live updates
+    const bookingsSubscription = supabase
+      .channel(`bookings:mentor_id=eq.${mentor.id}`)
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: 'bookings',
+          filter: `mentor_id=eq.${mentor.id}`
+        },
+        () => {
+          // Refresh stats when bookings change
+          getMentorStats(mentor.id)
+            .then((data) => {
+              setStats({
+                upcoming: data.upcomingSessions,
+                completed: data.completedSessions,
+                views: data.profileViews,
+              })
+            })
+            .catch(err => console.error('Error refreshing stats:', err))
+        }
+      )
+      .subscribe()
+
+    // Subscribe to profile views changes (new views)
+    const viewsSubscription = supabase
+      .channel(`profile_views:mentor_id=eq.${mentor.id}`)
+      .on('postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'profile_views',
+          filter: `mentor_id=eq.${mentor.id}`
+        },
+        () => {
+          // Refresh stats and visitors when new view is recorded
+          getMentorStats(mentor.id)
+            .then((data) => {
+              setStats(s => ({ ...s, views: data.profileViews }))
+            })
+            .catch(err => console.error('Error refreshing views:', err))
+          
+          getMentorProfileVisitors(mentor.id, 10)
+            .then(setVisitors)
+            .catch(err => console.error('Error refreshing visitors:', err))
+        }
+      )
+      .subscribe()
+
+    // Cleanup subscriptions on unmount or mentor change
+    return () => {
+      supabase.removeChannel(bookingsSubscription)
+      supabase.removeChannel(viewsSubscription)
+    }
   }, [user, mentor, loading, navigate])
 
   if (loading) {
@@ -150,6 +220,42 @@ export default function MentorDashboard() {
                   </Link>
                 ))}
               </div>
+            </div>
+
+            {/* Profile Visitors */}
+            <div className="bg-white rounded-2xl border border-grey-soft p-6 mt-8">
+              <h2 className="text-base font-display text-navy mb-5">Recent Profile Visitors</h2>
+              {loadingVisitors ? (
+                <div className="flex justify-center py-8">
+                  <div className="w-6 h-6 rounded-full border-2 border-gold border-t-transparent animate-spin" />
+                </div>
+              ) : visitors.length === 0 ? (
+                <div className="text-center py-8">
+                  <Eye className="h-8 w-8 text-grey/30 mx-auto mb-2" />
+                  <p className="text-sm text-grey">No visitors yet. Share your profile to get views!</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {visitors.map((visitor) => (
+                    <div key={visitor.id} className="flex items-center gap-3 p-3 hover:bg-ivory-light rounded-lg transition-colors">
+                      <div className="w-8 h-8 rounded-full shrink-0 overflow-hidden bg-ivory-dark flex items-center justify-center">
+                        {visitor.visitorAvatarUrl ? (
+                          <img src={visitor.visitorAvatarUrl} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <User className="h-4 w-4 text-grey" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-navy truncate">{visitor.visitorName}</p>
+                        <p className="text-xs text-grey">
+                          {new Date(visitor.viewedAt).toLocaleDateString()} at{' '}
+                          {new Date(visitor.viewedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
         </main>
