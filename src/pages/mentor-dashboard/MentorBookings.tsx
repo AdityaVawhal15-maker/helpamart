@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Calendar, Clock, Video } from 'lucide-react'
+import { Calendar, Clock, Video, CheckCircle2 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { getMentorBookings, type MentorBooking } from '@/lib/mentor'
+import { getMentorBookings, markBookingCompleted, type MentorBooking } from '@/lib/mentor'
 
 const STATUS_STYLES: Record<string, string> = {
   pending: 'bg-orange/10 text-orange',
@@ -19,6 +19,8 @@ export default function MentorBookings() {
   const [bookings, setBookings] = useState<MentorBooking[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [completingId, setCompletingId] = useState<string | null>(null)
+  const [completionError, setCompletionError] = useState<string | null>(null)
 
   useEffect(() => {
     if (authLoading) return
@@ -104,6 +106,28 @@ export default function MentorBookings() {
     }
   }, [user, mentor, authLoading, navigate])
 
+  const handleMarkComplete = async (bookingId: string) => {
+    try {
+      setCompletingId(bookingId)
+      setCompletionError(null)
+      const success = await markBookingCompleted(bookingId)
+      if (success) {
+        // Refresh bookings to reflect the completion
+        if (mentor) {
+          const updated = await getMentorBookings(mentor.id)
+          setBookings(updated)
+        }
+      } else {
+        setCompletionError('Failed to mark session as complete. Please try again.')
+      }
+    } catch (err) {
+      console.error('Error marking booking complete:', err)
+      setCompletionError('An error occurred. Please try again.')
+    } finally {
+      setCompletingId(null)
+    }
+  }
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-ivory flex items-center justify-center">
@@ -137,6 +161,11 @@ export default function MentorBookings() {
               {bookings.map(b => {
                 const start = new Date(b.startAt)
                 const end = b.endAt ? new Date(b.endAt) : null
+                const now = new Date()
+                const isPast = end ? end < now : start < now
+                const isCompleted = b.status === 'completed'
+                const canMarkComplete = !isCompleted && (b.status === 'confirmed' || b.status === 'pending') && isPast
+                
                 return (
                   <div key={b.id} className="bg-white rounded-2xl border border-grey-soft p-5">
                     <div className="flex items-start gap-4">
@@ -163,8 +192,8 @@ export default function MentorBookings() {
                         </div>
                       </div>
                     </div>
-                    {b.meetLink && (
-                      <div className="mt-4 pt-4 border-t border-grey-soft">
+                    <div className="mt-4 pt-4 border-t border-grey-soft flex flex-wrap items-center gap-2">
+                      {b.meetLink && (
                         <a
                           href={b.meetLink}
                           target="_blank"
@@ -173,6 +202,30 @@ export default function MentorBookings() {
                         >
                           <Video className="h-3.5 w-3.5" /> Join Google Meet
                         </a>
+                      )}
+                      {canMarkComplete && (
+                        <button
+                          onClick={() => handleMarkComplete(b.id)}
+                          disabled={completingId === b.id}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 bg-gold/10 text-gold rounded-xl text-xs font-semibold hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {completingId === b.id ? (
+                            <>
+                              <div className="h-3.5 w-3.5 rounded-full border-2 border-gold border-t-transparent animate-spin" />
+                              Marking...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              Mark Complete
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                    {completionError && (
+                      <div className="mt-3 text-xs text-maroon">
+                        {completionError}
                       </div>
                     )}
                   </div>
