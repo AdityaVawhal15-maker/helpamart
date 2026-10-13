@@ -506,22 +506,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.warn('[AUTH] Failed to persist mentor in user_metadata:', e)
     }
 
-    // Save to Supabase DB mentors table — this is the shared production source of truth
-    // that FindMentor.tsx queries for cross-user discovery.
+    // ── Save to Supabase DB (source of truth for cross-user discovery) ──────────
     //
-    // IMPORTANT: We conflict on 'user_id' (which has a UNIQUE constraint) so that:
-    //   - First save: INSERTs a new row (Postgres assigns id via gen_random_uuid()).
-    //   - Subsequent saves: UPDATEs the existing row for this user.
-    // We must NOT conflict on 'id' because on a fresh mentor (no prior DB record) the
-    // client-side id is null/fake, so Postgres would try to INSERT instead of UPDATE,
-    // causing a duplicate key violation on user_id or slug.
+    // Strategy: explicit SELECT → UPDATE-or-INSERT.
+    // We NEVER use upsert() because even with onConflict:'user_id', Postgres still
+    // fires the slug UNIQUE constraint if the DO UPDATE SET clause tries to write a
+    // slug that already exists in another row.
+    //
+    // Rules:
+    //  - Fetch the real DB row for this user_id first (bypasses all stale client state).
+    //  - If found:  UPDATE the row in-place, KEEPING its existing slug unchanged.
+    //               Changing a slug breaks bookmarks and causes constraint violations.
+    //  - If not found: INSERT a new row with a unique slug derived from the user's
+    //               name + their UUID prefix (practically guaranteed unique per user).
+    //               Fall back with a timestamp suffix if an unlikely collision occurs.
     try {
-      const upsertPayload: Record<string, unknown> = {
-        // Only include 'id' when we have a real DB-assigned id (i.e., mentor already
-        // existed in the DB). Omitting id lets Postgres use gen_random_uuid() on INSERT.
-        ...(merged.id ? { id: merged.id } : {}),
-        user_id: user.id,
-        slug: merged.slug,
+      // Step 1: Authoritative DB lookup — always use user_id, never stale client id.
+      const { data: dbRow, error: fetchError } = await supabase
+        .from('mentors')
+        .select('id, slug')
+        .eq('user_id', user.id)
+        .maybeSingle()
+
+      if (fetchError) {
+        console.error('[AUTH] Failed to fetch mentor by user_id:', fetchError)
+        throw new Error(`Profile could not be saved to the database: ${fetchError.message}`)
+      }
+
+      // Step 2: Build the common column payload (everything except id, user_id, slug).
+      const ts = new Date().toISOString()
+      const columnPayload: Record<string, unknown> = {
         name: merged.name,
         role: merged.role,
         company: merged.company,
@@ -544,42 +558,86 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         availability: Array.isArray(merged.availability) ? merged.availability : [],
         starting_price_cents: merged.startingPriceCents ?? null,
         availability_preview: merged.availabilityPreview ?? null,
-        updated_at: new Date().toISOString(),
+        updated_at: ts,
       }
-
-      // Set published_at timestamp when first publishing so discovery ordering works
       if (merged.status === 'published') {
-        upsertPayload.published_at = new Date().toISOString()
+        columnPayload.published_at = ts
       }
 
-      const { data: upsertData, error: upsertError } = await supabase
-        .from('mentors')
-        .upsert(upsertPayload, { onConflict: 'user_id' })
-        .select('id, slug')
-        .single()
+      let savedId: string | null = null
+      let savedSlug: string | null = null
 
-      if (upsertError) {
-        // Surface real DB failures — silent failure here means publish appears to succeed
-        // but the mentor never appears in discovery for other users.
-        console.error('[AUTH] Supabase mentors upsert failed:', upsertError)
-        throw new Error(`Profile could not be saved to the database: ${upsertError.message}`)
+      if (dbRow) {
+        // ── UPDATE existing row ──────────────────────────────────────────────
+        // NEVER update slug — it's a permanent permalink identifier.
+        // Changing it would break any existing bookmarks and may cause a
+        // slug UNIQUE constraint violation if the new value exists elsewhere.
+        console.log('[AUTH] mentor DB row found, updating id:', dbRow.id, 'slug:', dbRow.slug)
+
+        const { data: updData, error: updError } = await supabase
+          .from('mentors')
+          .update(columnPayload)
+          .eq('id', dbRow.id)
+          .select('id, slug')
+          .single()
+
+        if (updError) {
+          console.error('[AUTH] mentor UPDATE failed:', updError)
+          throw new Error(`Profile could not be saved to the database: ${updError.message}`)
+        }
+        savedId = updData.id
+        savedSlug = updData.slug
+        console.log('[AUTH] mentor UPDATE succeeded - id:', savedId)
+      } else {
+        // ── INSERT new row ───────────────────────────────────────────────────
+        // Derive a slug from the mentor's name + first 8 chars of their UUID.
+        // The UUID prefix is unique per user, so two users with the same name
+        // will always get different slugs.
+        const baseName = (merged.name || user.name || 'mentor')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/(^-|-$)/g, '') || 'mentor'
+        const candidateSlug = `${baseName}-${user.id.slice(0, 8)}`
+
+        // Collision guard: check whether this slug is already in the DB.
+        // This should never trigger (UUID prefix is unique), but we handle it
+        // defensively so there is never a silent data-integrity failure.
+        const { data: slugCheck } = await supabase
+          .from('mentors')
+          .select('id')
+          .eq('slug', candidateSlug)
+          .maybeSingle()
+
+        const finalSlug = slugCheck
+          ? `${candidateSlug}-${Date.now().toString(36)}`  // extremely unlikely fallback
+          : candidateSlug
+
+        console.log('[AUTH] inserting new mentor with slug:', finalSlug)
+
+        const { data: insData, error: insError } = await supabase
+          .from('mentors')
+          .insert({ user_id: user.id, slug: finalSlug, ...columnPayload })
+          .select('id, slug')
+          .single()
+
+        if (insError) {
+          console.error('[AUTH] mentor INSERT failed:', insError)
+          throw new Error(`Profile could not be saved to the database: ${insError.message}`)
+        }
+        savedId = insData.id
+        savedSlug = insData.slug
+        console.log('[AUTH] mentor INSERT succeeded - id:', savedId, 'slug:', savedSlug)
       }
 
-      // Sync the DB-assigned id and slug back into our merged object so subsequent
-      // saves use the real id and any slug the DB may have sanitised.
-      if (upsertData?.id) {
-        merged.id = upsertData.id
-      }
-      if (upsertData?.slug) {
-        merged.slug = upsertData.slug
-      }
-      console.log('[AUTH] Supabase mentors upsert succeeded - id:', merged.id, 'status:', merged.status)
+      // Step 3: Sync the authoritative id and slug back into the in-memory object.
+      if (savedId) merged.id = savedId
+      if (savedSlug) merged.slug = savedSlug
     } catch (e: any) {
       if (e?.message?.startsWith('Profile could not be saved')) {
         throw e
       }
-      // Log but don't block for non-critical errors (e.g. table missing in local dev)
-      console.warn('[AUTH] saveMentorProfile Supabase upsert warning:', e)
+      // Non-critical path (e.g. table not yet in schema cache during local dev).
+      console.warn('[AUTH] saveMentorProfile DB write warning:', e)
     }
 
     if (merged.status === 'published') {
