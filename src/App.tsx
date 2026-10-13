@@ -29,6 +29,8 @@ const MentorAvailability = lazy(() => import('@/pages/mentor-dashboard/MentorAva
 const MentorServices = lazy(() => import('@/pages/mentor-dashboard/MentorServices'))
 const MentorProfileEdit = lazy(() => import('@/pages/mentor-dashboard/MentorProfileEdit'))
 const AdminMeet = lazy(() => import('@/pages/admin/AdminMeet'))
+const Udaan30 = lazy(() => import('@/pages/Udaan30'))
+const UdaanPaymentResult = lazy(() => import('@/pages/UdaanPaymentResult'))
 
 // Pages that use a transparent navbar initially
 const HERO_PAGES = ['/']
@@ -91,6 +93,8 @@ export default function App() {
           <Route path="/mentor-dashboard/profile" element={<MentorProfileEdit />} />
           <Route path="/admin/meet" element={<AdminMeet />} />
           <Route path="/admin" element={<AdminMeet />} />
+          <Route path="/udaan-30" element={<Udaan30 />} />
+          <Route path="/udaan-payment-result" element={<UdaanPaymentResult />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

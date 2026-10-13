@@ -89,7 +89,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (!booking) {
-      console.warn('[CASHFREE-WEBHOOK] Booking not found for order:', orderId)
+      // Check if this order belongs to Udaan 30
+      const { data: udaan } = await db
+        .from('udaan_enrollments')
+        .select('id, user_id, payment_status, enrollment_status, journey')
+        .eq('cashfree_order_id', orderId)
+        .maybeSingle()
+
+      if (udaan) {
+        console.log('[CASHFREE-WEBHOOK] Found Udaan enrollment for order:', orderId)
+        if (orderStatus === 'PAID' || orderStatus === 'SETTLED') {
+          if (udaan.payment_status !== 'completed') {
+            const now = new Date()
+            const ends = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
+            await db
+              .from('udaan_enrollments')
+              .update({
+                payment_status: 'completed',
+                enrollment_status: 'active',
+                paid_at: now.toISOString(),
+                starts_at: now.toISOString(),
+                ends_at: ends.toISOString(),
+                updated_at: now.toISOString(),
+              })
+              .eq('id', udaan.id)
+            console.log('[CASHFREE-WEBHOOK] Udaan enrollment activated:', udaan.id)
+          }
+        } else if (orderStatus === 'FAILED' || orderStatus === 'CANCELLED' || orderStatus === 'EXPIRED') {
+          await db
+            .from('udaan_enrollments')
+            .update({
+              payment_status: 'failed',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', udaan.id)
+          console.log('[CASHFREE-WEBHOOK] Udaan enrollment marked failed:', udaan.id)
+        }
+        return res.status(200).json({ received: true, udaanId: udaan.id })
+      }
+
+      console.warn('[CASHFREE-WEBHOOK] Record not found for order:', orderId)
       return res.status(200).json({ received: true }) // Still return 200 to acknowledge webhook
     }
 

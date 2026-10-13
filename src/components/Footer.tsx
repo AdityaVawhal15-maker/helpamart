@@ -10,6 +10,7 @@ const ease = [0.16, 1, 0.3, 1] as const
 
 const EXPLORE_LINKS = [
   { label: 'Find a Mentor', to: '/find-mentor' },
+  { label: 'Udaan 30 (30-Day)', to: '/udaan-30' },
   { label: 'Offer Your Help', to: '/offer-help' },
   { label: 'How It Works', to: '/how-it-works' },
   { label: 'Real Stories', to: '/stories' },

@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase'
 import type { Mentor } from '@/types'
 import StoriesSection from '@/components/StoriesSection'
 import CommunityHomePreview from '@/components/CommunityHomePreview'
+import Udaan30Section from '@/components/Udaan30Section'
 
 const ease = [0.16, 1, 0.3, 1] as const
 
@@ -580,6 +581,11 @@ export default function Home() {
           )}
         </div>
       </section>
+
+      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          UDAAN 30
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+      <Udaan30Section />
 
       {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           HOW IT WORKS

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, X, Menu, ChevronDown, ArrowRight } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
@@ -8,6 +8,7 @@ import clsx from 'clsx'
 
 const NAV_LINKS = [
   { label: 'Find a Mentor', to: '/find-mentor' },
+  { label: 'Udaan 30', to: '/udaan-30' },
   { label: 'Offer Help', to: '/offer-help' },
   { label: 'Community', to: '/community' },
   { label: 'How It Works', to: '/how-it-works' },
@@ -28,6 +29,19 @@ export default function Navbar({ transparent = false }: Props) {
   const searchRef = useRef<HTMLInputElement>(null)
   const userMenuRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  const location = useLocation()
+
+  const handleNavClick = (to: string, e: React.MouseEvent) => {
+    if (to === '/udaan-30' && location.pathname === '/') {
+      e.preventDefault()
+      const el = document.getElementById('udaan-30')
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth' })
+      } else {
+        navigate('/udaan-30')
+      }
+    }
+  }
 
   // Scroll detection
   useEffect(() => {
@@ -131,6 +145,7 @@ export default function Navbar({ transparent = false }: Props) {
                 <NavLink
                   key={link.to}
                   to={link.to}
+                  onClick={(e) => handleNavClick(link.to, e)}
                   onMouseEnter={() => setHoveredNav(link.to)}
                   className={({ isActive }) => clsx(
                     'relative px-3.5 py-1.5 text-[13.5px] font-nav font-medium rounded-xl transition-colors duration-200 select-none group',
@@ -383,7 +398,10 @@ export default function Navbar({ transparent = false }: Props) {
                   <NavLink
                     key={link.to}
                     to={link.to}
-                    onClick={() => setMobileOpen(false)}
+                    onClick={(e) => {
+                      handleNavClick(link.to, e)
+                      setMobileOpen(false)
+                    }}
                     className={({ isActive }) => clsx(
                       'flex items-center justify-between px-6 py-3.5 text-base font-nav font-medium transition-all duration-200 group',
                       isActive
