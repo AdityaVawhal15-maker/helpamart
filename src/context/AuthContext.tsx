@@ -412,12 +412,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     console.log('[AUTH] saveMentorProfile called with updates:', mentorUpdates)
 
+    // Build a stable slug from the user's name + short user ID suffix to avoid
+    // collisions if two users share the same name or on retry after a partial save.
+    const baseSlug = (mentorUpdates.name || user.name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+    const safeSlug = (baseSlug || 'mentor') + '-' + user.id.slice(0, 8)
+
     const existing = mentor || {
-      id: crypto.randomUUID(),
-      slug: (mentorUpdates.name || user.name)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/(^-|-$)/g, '') || `mentor-${user.id.slice(0, 8)}`,
+      // NOTE: Do NOT generate a random id here. If there's no mentor record yet,
+      // we omit the id from the upsert payload and let Postgres assign it via
+      // gen_random_uuid(). On subsequent saves, 'mentor' state will contain the
+      // real DB id and we include it to target the exact row.
+      id: null as unknown as string,
+      slug: safeSlug,
       name: user.name,
       role: '',
       company: '',
@@ -499,9 +508,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Save to Supabase DB mentors table — this is the shared production source of truth
     // that FindMentor.tsx queries for cross-user discovery.
+    //
+    // IMPORTANT: We conflict on 'user_id' (which has a UNIQUE constraint) so that:
+    //   - First save: INSERTs a new row (Postgres assigns id via gen_random_uuid()).
+    //   - Subsequent saves: UPDATEs the existing row for this user.
+    // We must NOT conflict on 'id' because on a fresh mentor (no prior DB record) the
+    // client-side id is null/fake, so Postgres would try to INSERT instead of UPDATE,
+    // causing a duplicate key violation on user_id or slug.
     try {
       const upsertPayload: Record<string, unknown> = {
-        id: merged.id,
+        // Only include 'id' when we have a real DB-assigned id (i.e., mentor already
+        // existed in the DB). Omitting id lets Postgres use gen_random_uuid() on INSERT.
+        ...(merged.id ? { id: merged.id } : {}),
         user_id: user.id,
         slug: merged.slug,
         name: merged.name,
@@ -534,9 +552,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         upsertPayload.published_at = new Date().toISOString()
       }
 
-      const { error: upsertError } = await supabase.from('mentors').upsert(upsertPayload, {
-        onConflict: 'id',
-      })
+      const { data: upsertData, error: upsertError } = await supabase
+        .from('mentors')
+        .upsert(upsertPayload, { onConflict: 'user_id' })
+        .select('id, slug')
+        .single()
 
       if (upsertError) {
         // Surface real DB failures — silent failure here means publish appears to succeed
@@ -544,7 +564,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error('[AUTH] Supabase mentors upsert failed:', upsertError)
         throw new Error(`Profile could not be saved to the database: ${upsertError.message}`)
       }
-      console.log('[AUTH] Supabase mentors upsert succeeded with status:', merged.status)
+
+      // Sync the DB-assigned id and slug back into our merged object so subsequent
+      // saves use the real id and any slug the DB may have sanitised.
+      if (upsertData?.id) {
+        merged.id = upsertData.id
+      }
+      if (upsertData?.slug) {
+        merged.slug = upsertData.slug
+      }
+      console.log('[AUTH] Supabase mentors upsert succeeded - id:', merged.id, 'status:', merged.status)
     } catch (e: any) {
       if (e?.message?.startsWith('Profile could not be saved')) {
         throw e
