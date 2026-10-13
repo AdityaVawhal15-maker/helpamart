@@ -1011,7 +1011,7 @@ function StepExperience({
           label="Companies / Organizations"
           values={companies}
           setValues={setCompanies}
-          placeholder="e.g. Microsoft, Razorpay, Zepto"
+          placeholder="e.g. Microsoft, Google, Zepto"
         />
         <ListField
           label="Education / Degrees"

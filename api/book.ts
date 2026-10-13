@@ -611,7 +611,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       payment_status: finalPriceCents === 0 ? 'not_required' : 'pending',
       price_cents: finalPriceCents,
       currency,
-      payment_provider: finalPriceCents === 0 ? 'none' : 'razorpay',
+      payment_provider: finalPriceCents === 0 ? 'none' : 'cashfree',
       idempotency_key: idempotencyKey || undefined,
       meet_link: null, // Will ONLY be set once Google Meet API responds with real URI
       mentor_email: mentorEmail,
