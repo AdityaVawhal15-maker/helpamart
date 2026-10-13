@@ -22,7 +22,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
-import nodemailer from 'nodemailer'
+import { sendUdaanEnrollmentNotification } from './_udaanEmail.js'
 
 // ─── Fixed Constants ──────────────────────────────────────────────────────────
 const UDAAN_PRICE_RUPEES = 149
@@ -54,92 +54,6 @@ async function extractUserId(authHeader: string | undefined): Promise<string | n
     return user?.id || null
   } catch {
     return null
-  }
-}
-
-// ─── Email notification helpers (SMTP) ─────────────────────────────────────────
-function getTransporter() {
-  const host = process.env.SMTP_HOST
-  const user = process.env.SMTP_USER
-  const pass = process.env.SMTP_PASS
-  if (!host || !user || !pass) return null
-  return nodemailer.createTransport({
-    host,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: Number(process.env.SMTP_PORT) === 465,
-    auth: { user, pass },
-  })
-}
-
-async function sendEnrollmentEmails(enrollment: any) {
-  const transporter = getTransporter()
-  if (!transporter) {
-    console.log('[UDAAN] SMTP not configured; enrollment saved in DB for team operational review.')
-    return
-  }
-
-  const fromAddress = process.env.SMTP_FROM || process.env.SMTP_USER || 'hello@helpamart.com'
-  const supportEmail = process.env.SUPPORT_EMAIL || 'support@helpamart.com'
-
-  // 1. Confirmation email to student
-  try {
-    await transporter.sendMail({
-      from: `"HELPAMART Udaan 30" <${fromAddress}>`,
-      to: enrollment.email,
-      subject: `Your Udaan 30 Mentorship is Confirmed! — ${enrollment.journey}`,
-      html: `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; color: #071A35; padding: 20px;">
-          <h2 style="color: #071A35; margin-bottom: 8px;">Your Udaan Begins Now! 🚀</h2>
-          <p style="font-size: 15px; color: #4B5563; line-height: 1.6;">
-            Hi ${enrollment.full_name},<br/><br/>
-            Your enrollment in <strong>Udaan 30 — ${enrollment.journey}</strong> has been successfully confirmed.
-          </p>
-          <div style="background-color: #F8F9FA; border-left: 4px solid #B77A22; padding: 16px; margin: 20px 0; border-radius: 4px;">
-            <p style="margin: 4px 0; font-size: 14px;"><strong>Order ID:</strong> ${enrollment.cashfree_order_id}</p>
-            <p style="margin: 4px 0; font-size: 14px;"><strong>Journey:</strong> ${enrollment.journey}</p>
-            <p style="margin: 4px 0; font-size: 14px;"><strong>Duration:</strong> 30 Days</p>
-            <p style="margin: 4px 0; font-size: 14px;"><strong>Amount Paid:</strong> ₹149 INR (via Cashfree)</p>
-          </div>
-          <p style="font-size: 14px; color: #4B5563; line-height: 1.6;">
-            <strong>What happens next?</strong><br/>
-            Our team coordinator will review your profile and match you with a verified mentor aligned with your goals. You will receive an onboarding roadmap and first check-in details directly by email.
-          </p>
-          <p style="font-size: 13px; color: #9CA3AF; margin-top: 30px;">
-            Questions? Contact us at <a href="mailto:${supportEmail}" style="color: #B77A22;">${supportEmail}</a>.
-          </p>
-        </div>
-      `,
-    })
-    console.log('[UDAAN] Confirmation email sent to student:', enrollment.email)
-  } catch (err: any) {
-    console.error('[UDAAN] Failed to send student confirmation email:', err.message)
-  }
-
-  // 2. Team notification email
-  try {
-    await transporter.sendMail({
-      from: `"HELPAMART System" <${fromAddress}>`,
-      to: supportEmail,
-      subject: `[New Udaan 30 Enrollment] ${enrollment.full_name} — ${enrollment.journey}`,
-      html: `
-        <div style="font-family: sans-serif; max-width: 600px; padding: 20px;">
-          <h3>New Udaan 30 Mentorship Enrollment</h3>
-          <p><strong>Student Name:</strong> ${enrollment.full_name}</p>
-          <p><strong>Email:</strong> ${enrollment.email}</p>
-          <p><strong>Phone:</strong> ${enrollment.phone || 'N/A'}</p>
-          <p><strong>Journey:</strong> ${enrollment.journey}</p>
-          <p><strong>Custom Goal:</strong> ${enrollment.custom_goal || 'N/A'}</p>
-          <p><strong>Experience Level:</strong> ${enrollment.experience_level || 'N/A'}</p>
-          <p><strong>Communication Preference:</strong> ${enrollment.communication_preference || 'N/A'}</p>
-          <p><strong>Availability:</strong> ${enrollment.availability_preference || 'N/A'}</p>
-          <p><strong>Order ID:</strong> ${enrollment.cashfree_order_id}</p>
-          <p><strong>Enrolled At:</strong> ${new Date().toISOString()}</p>
-        </div>
-      `,
-    })
-    console.log('[UDAAN] Team notification email dispatched to:', supportEmail)
-  } catch (err: any) {
-    console.error('[UDAAN] Failed to send team notification email:', err.message)
   }
 }
 
@@ -447,8 +361,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         console.log('[UDAAN] Successfully activated enrollment:', enrollment.id)
 
-        // Dispatch confirmation and team notification emails
-        await sendEnrollmentEmails(updated)
+        // Dispatch confirmation and team notification emails to hello@helpamart.com
+        await sendUdaanEnrollmentNotification(updated, db)
 
         return res.status(200).json({
           verified: true,

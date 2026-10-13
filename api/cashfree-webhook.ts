@@ -19,6 +19,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 import crypto from 'crypto'
+import { sendUdaanEnrollmentNotification } from './_udaanEmail.js'
 
 // ─── Supabase admin client (service-role — server only) ──────────────────────
 function adminSupabase() {
@@ -92,29 +93,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Check if this order belongs to Udaan 30
       const { data: udaan } = await db
         .from('udaan_enrollments')
-        .select('id, user_id, payment_status, enrollment_status, journey')
+        .select('*')
         .eq('cashfree_order_id', orderId)
         .maybeSingle()
 
       if (udaan) {
         console.log('[CASHFREE-WEBHOOK] Found Udaan enrollment for order:', orderId)
         if (orderStatus === 'PAID' || orderStatus === 'SETTLED') {
+          const cfPaymentId = event.data?.payment?.cf_payment_id || event.data?.payment_id || udaan.cashfree_payment_id || null
+          let activeRecord = udaan
+
           if (udaan.payment_status !== 'completed') {
             const now = new Date()
             const ends = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
-            await db
+            const { data: updated, error: updateErr } = await db
               .from('udaan_enrollments')
               .update({
                 payment_status: 'completed',
                 enrollment_status: 'active',
+                cashfree_payment_id: cfPaymentId,
                 paid_at: now.toISOString(),
                 starts_at: now.toISOString(),
                 ends_at: ends.toISOString(),
                 updated_at: now.toISOString(),
               })
               .eq('id', udaan.id)
-            console.log('[CASHFREE-WEBHOOK] Udaan enrollment activated:', udaan.id)
+              .select('*')
+              .single()
+
+            if (updateErr) {
+              console.error('[CASHFREE-WEBHOOK] Error activating Udaan enrollment:', updateErr.message)
+            } else if (updated) {
+              activeRecord = updated
+              console.log('[CASHFREE-WEBHOOK] Udaan enrollment activated:', udaan.id)
+            }
           }
+
+          // Dispatches email to hello@helpamart.com idempotently
+          await sendUdaanEnrollmentNotification(activeRecord, db)
         } else if (orderStatus === 'FAILED' || orderStatus === 'CANCELLED' || orderStatus === 'EXPIRED') {
           await db
             .from('udaan_enrollments')
