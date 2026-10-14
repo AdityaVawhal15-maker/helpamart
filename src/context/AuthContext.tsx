@@ -157,6 +157,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(`${PROFILE_KEY_PREFIX}${sbUser.id}`, JSON.stringify(resolvedUser))
     } catch {}
 
+function safeParseArray(val: unknown): any[] {
+  if (Array.isArray(val)) return val
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
     // 5. Mentor profile lookup - ALWAYS prefer Supabase DB over cache
     let resolvedMentor: Mentor | null = null
 
@@ -179,23 +192,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           intro: data.intro || '',
           about: data.about || '',
           photoUrl: data.photo_url || resolvedUser.photoUrl,
-          languages: data.languages || ['English'],
+          languages: safeParseArray(data.languages).length > 0 ? safeParseArray(data.languages) : ['English'],
           yearsExperience: data.years_experience ?? null,
           linkedinUrl: data.linkedin_url || null,
           websiteUrl: data.website_url || null,
-          education: data.education || [],
-          companies: data.companies || [],
-          achievements: data.achievements || [],
+          education: safeParseArray(data.education),
+          companies: safeParseArray(data.companies),
+          achievements: safeParseArray(data.achievements),
           status: data.status || 'draft',
           timezone: data.timezone || resolvedUser.timezone,
           bufferMinutes: data.buffer_minutes ?? 15,
           advanceDays: data.advance_days ?? 30,
           minNoticeHours: data.min_notice_hours ?? 24,
           maxBookingsPerDay: data.max_bookings_per_day ?? 4,
-          categories: data.categories || [],
-          skills: data.skills || [],
-          services: Array.isArray(data.services) ? data.services : [],
-          availability: Array.isArray(data.availability) ? data.availability : [],
+          categories: safeParseArray(data.categories),
+          skills: safeParseArray(data.skills),
+          services: safeParseArray(data.services),
+          availability: safeParseArray(data.availability),
           startingPriceCents: data.starting_price_cents ?? null,
           availabilityPreview: data.availability_preview ?? null,
         }
@@ -570,15 +583,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (dbRow) {
         // ── UPDATE existing row ──────────────────────────────────────────────
         // NEVER update slug — it's a permanent permalink identifier.
-        // Changing it would break any existing bookmarks and may cause a
-        // slug UNIQUE constraint violation if the new value exists elsewhere.
-        console.log('[AUTH] mentor DB row found, updating id:', dbRow.id, 'slug:', dbRow.slug)
+        // Changing it would break existing bookmarks and cause constraint violations.
+        console.log('[AUTH] Canonical mentor DB row found, updating id:', dbRow.id, 'slug:', dbRow.slug)
 
         const { data: updData, error: updError } = await supabase
           .from('mentors')
           .update(columnPayload)
           .eq('id', dbRow.id)
-          .select('id, slug')
+          .select('id, slug, status')
           .single()
 
         if (updError) {
@@ -587,51 +599,99 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         savedId = updData.id
         savedSlug = updData.slug
-        console.log('[AUTH] mentor UPDATE succeeded - id:', savedId)
+        console.log('[AUTH] mentor UPDATE succeeded - id:', savedId, 'slug:', savedSlug)
       } else {
         // ── INSERT new row ───────────────────────────────────────────────────
-        // Derive a slug from the mentor's name + first 8 chars of their UUID.
-        // The UUID prefix is unique per user, so two users with the same name
-        // will always get different slugs.
+        // For a genuinely new mentor, generate a clean slug from name.
+        // If clean slug is already taken by another mentor, append stable user-id suffix.
         const baseName = (merged.name || user.name || 'mentor')
           .toLowerCase()
+          .trim()
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/(^-|-$)/g, '') || 'mentor'
-        const candidateSlug = `${baseName}-${user.id.slice(0, 8)}`
 
-        // Collision guard: check whether this slug is already in the DB.
-        // This should never trigger (UUID prefix is unique), but we handle it
-        // defensively so there is never a silent data-integrity failure.
+        // Check if clean baseName slug is available
         const { data: slugCheck } = await supabase
           .from('mentors')
-          .select('id')
-          .eq('slug', candidateSlug)
+          .select('id, user_id')
+          .eq('slug', baseName)
           .maybeSingle()
 
-        const finalSlug = slugCheck
-          ? `${candidateSlug}-${Date.now().toString(36)}`  // extremely unlikely fallback
-          : candidateSlug
+        let candidateSlug = baseName
+        if (slugCheck && slugCheck.user_id !== user.id) {
+          candidateSlug = `${baseName}-${user.id.slice(0, 8)}`
+          const { data: secondCheck } = await supabase
+            .from('mentors')
+            .select('id')
+            .eq('slug', candidateSlug)
+            .maybeSingle()
+          if (secondCheck) {
+            candidateSlug = `${baseName}-${user.id.slice(0, 6)}-${Date.now().toString(36)}`
+          }
+        }
 
-        console.log('[AUTH] inserting new mentor with slug:', finalSlug)
+        console.log('[AUTH] inserting new canonical mentor with slug:', candidateSlug)
 
         const { data: insData, error: insError } = await supabase
           .from('mentors')
-          .insert({ user_id: user.id, slug: finalSlug, ...columnPayload })
-          .select('id, slug')
+          .insert({ user_id: user.id, slug: candidateSlug, ...columnPayload })
+          .select('id, slug, status')
           .single()
 
         if (insError) {
-          console.error('[AUTH] mentor INSERT failed:', insError)
-          throw new Error(`Profile could not be saved to the database: ${insError.message}`)
+          // If a race condition occurred (e.g. concurrent save or slug collision)
+          console.warn('[AUTH] mentor INSERT hit error, attempting recovery:', insError)
+          // 1. Check if row for user_id was created concurrently
+          const { data: concurrentRow } = await supabase
+            .from('mentors')
+            .select('id, slug')
+            .eq('user_id', user.id)
+            .maybeSingle()
+
+          if (concurrentRow) {
+            const { data: updData, error: updErr } = await supabase
+              .from('mentors')
+              .update(columnPayload)
+              .eq('id', concurrentRow.id)
+              .select('id, slug, status')
+              .single()
+            if (updErr) throw new Error(`Profile could not be saved to the database: ${updErr.message}`)
+            savedId = updData.id
+            savedSlug = updData.slug
+          } else {
+            // 2. Slug collision recovery: retry with unique timestamp suffix
+            const fallbackSlug = `${baseName}-${user.id.slice(0, 6)}-${Date.now().toString(36)}`
+            const { data: retryData, error: retryErr } = await supabase
+              .from('mentors')
+              .insert({ user_id: user.id, slug: fallbackSlug, ...columnPayload })
+              .select('id, slug, status')
+              .single()
+            if (retryErr) throw new Error(`Profile could not be saved to the database: ${retryErr.message}`)
+            savedId = retryData.id
+            savedSlug = retryData.slug
+          }
+        } else {
+          savedId = insData.id
+          savedSlug = insData.slug
+          console.log('[AUTH] mentor INSERT succeeded - id:', savedId, 'slug:', savedSlug)
         }
-        savedId = insData.id
-        savedSlug = insData.slug
-        console.log('[AUTH] mentor INSERT succeeded - id:', savedId, 'slug:', savedSlug)
       }
 
-      // Step 3: Sync the authoritative id and slug back into the in-memory object.
+      // Step 3: Sync the authoritative id and slug back into the in-memory object,
+      // localStorage, and auth metadata so all future lookups are 100% consistent.
       if (savedId) merged.id = savedId
       if (savedSlug) merged.slug = savedSlug
+
+      try {
+        localStorage.setItem(`${MENTOR_KEY_PREFIX}${user.id}`, JSON.stringify(merged))
+        await supabase.auth.updateUser({
+          data: {
+            mentor_profile: merged,
+          },
+        })
+      } catch (cacheErr) {
+        console.warn('[AUTH] Error syncing canonical mentor to cache/metadata:', cacheErr)
+      }
     } catch (e: any) {
       if (e?.message?.startsWith('Profile could not be saved')) {
         throw e
@@ -645,7 +705,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     console.log('[AUTH] saveMentorProfile complete - setting mentor to:', merged)
-    console.log('[AUTH] merged.status =', merged.status)
+    console.log('[AUTH] merged.status =', merged.status, 'slug =', merged.slug)
     setMentor(merged)
     return merged
   }

@@ -6,7 +6,6 @@ import {
   CheckCircle, CheckCircle2, ArrowRight, ArrowLeft, Loader2, Copy, Globe,
   Sparkles, MapPin, ExternalLink, Linkedin, Check
 } from 'lucide-react'
-import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 import { PhotoCropUpload } from '@/components/ui/PhotoCropUpload'
@@ -302,21 +301,6 @@ export default function BecomeMentor() {
           format: s.format,
         })),
       })
-      try {
-        await api('/api/mentor/me', {
-          method: 'PUT',
-          body: JSON.stringify({
-            fullName, roleTitle, company, location, intro, about,
-            photoUrl: photoUrl || null,
-            languages, yearsExperience: yearsExp,
-            linkedinUrl: linkedinUrl || null, websiteUrl: websiteUrl || null,
-            companies, education, achievements, timezone,
-            categories, skills,
-            availability,
-            services,
-          }),
-        })
-      } catch {}
       await refresh()
       setStep(s => Math.min(s + 1, STEPS.length - 1))
       window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -332,12 +316,8 @@ export default function BecomeMentor() {
     try {
       console.log('[MENTOR] Starting publish flow - calling saveMentorProfile')
       const saved = await saveMentorProfile({ status: 'published' })
-      console.log('[MENTOR] saveMentorProfile returned mentor.status:', saved.status)
-      let slug = saved.slug
-      try {
-        const res = await api<{ mentor: { slug: string } }>('/api/mentor/publish', { method: 'POST' })
-        if (res?.mentor?.slug) slug = res.mentor.slug
-      } catch {}
+      console.log('[MENTOR] saveMentorProfile returned mentor.status:', saved.status, 'slug:', saved.slug)
+      const slug = saved.slug
       console.log('[MENTOR] Calling refresh() to reload mentor state')
       await refresh()
       console.log('[MENTOR] refresh() complete, setting publishResult')

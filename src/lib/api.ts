@@ -192,6 +192,17 @@ async function handleClientApiFallback<T>(
   // 5. /api/mentor/publish
   if (path.startsWith('/api/mentor/publish') && method === 'POST') {
     if (!userId) throw new Error('Not authenticated')
+    // Prefer authoritative DB row from Supabase
+    const { data: dbMentor } = await supabase
+      .from('mentors')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (dbMentor) {
+      return { mentor: dbMentor } as unknown as T
+    }
+
     let mentorObj: Mentor | null = null
     try {
       const raw = localStorage.getItem(`helpa_mentor_${userId}`)
@@ -203,13 +214,6 @@ async function handleClientApiFallback<T>(
     }
 
     mentorObj.status = 'published'
-    try {
-      localStorage.setItem(`helpa_mentor_${userId}`, JSON.stringify(mentorObj))
-      await supabase.auth.updateUser({
-        data: { mentor_profile: mentorObj },
-      })
-    } catch {}
-
     return { mentor: mentorObj } as unknown as T
   }
 

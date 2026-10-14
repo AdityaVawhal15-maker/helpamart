@@ -15,7 +15,7 @@ const NAV = [
 ]
 
 export default function MentorDashboard() {
-  const { user, mentor, loading } = useAuth()
+  const { user, mentor, loading, refresh } = useAuth()
   const navigate = useNavigate()
   const [stats, setStats] = useState({ upcoming: 0, completed: 0, views: 0 })
   const [visitors, setVisitors] = useState<ProfileVisitor[]>([])
@@ -27,9 +27,32 @@ export default function MentorDashboard() {
       navigate('/login?next=/mentor-dashboard')
       return
     }
+
+    let active = true
+
     if (!mentor) {
-      navigate('/become-a-mentor')
-      return
+      async function verifyMentorInDb() {
+        if (!user) return
+        try {
+          const { data: dbMentor } = await supabase
+            .from('mentors')
+            .select('id')
+            .eq('user_id', user.id)
+            .maybeSingle()
+          if (!active) return
+          if (!dbMentor) {
+            navigate('/become-a-mentor')
+          } else {
+            await refresh()
+          }
+        } catch {
+          if (active) navigate('/become-a-mentor')
+        }
+      }
+      verifyMentorInDb()
+      return () => {
+        active = false
+      }
     }
 
     // Initial stats load

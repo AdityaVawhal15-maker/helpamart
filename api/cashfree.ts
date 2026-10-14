@@ -298,7 +298,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log('[CASHFREE] authenticated user:', userId)
 
       // STEP 1: Resolve mentor from public.mentors (ONLY columns that exist)
-      const { data: mentorRow, error: mentorErr } = await db
+      let { data: mentorRow, error: mentorErr } = await db
         .from('mentors')
         .select('id, user_id, name, slug, services, status')
         .eq('slug', mentorSlug)
@@ -308,6 +308,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (mentorErr) {
         console.error('[CASHFREE] Mentor query error:', mentorErr.message)
         return res.status(500).json({ error: 'Unable to load mentor information. Please try again.' })
+      }
+
+      if (!mentorRow) {
+        // Fallback: Check by ID or slug prefix if mentor URL used a shortened slug or ID
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mentorSlug)
+        let fallbackQuery = db.from('mentors').select('id, user_id, name, slug, services, status').eq('status', 'published')
+        if (isUuid) {
+          fallbackQuery = fallbackQuery.or(`id.eq.${mentorSlug},slug.ilike.${mentorSlug}-%`)
+        } else {
+          fallbackQuery = fallbackQuery.ilike('slug', `${mentorSlug}-%`)
+        }
+        const { data: fallbackRow } = await fallbackQuery
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        if (fallbackRow) {
+          mentorRow = fallbackRow
+        }
       }
 
       if (!mentorRow) {

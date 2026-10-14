@@ -36,11 +36,49 @@ export default function MentorProfile() {
 
     async function loadMentor() {
       try {
-        const { data, error } = await supabase
-          .from('mentors')
-          .select('*')
-          .eq('slug', slug)
-          .maybeSingle()
+        let data: any = null
+        let error: any = null
+
+        if (slug === 'me') {
+          const { data: { session } } = await supabase.auth.getSession()
+          if (session?.user?.id) {
+            const res = await supabase
+              .from('mentors')
+              .select('*')
+              .eq('user_id', session.user.id)
+              .maybeSingle()
+            data = res.data
+            error = res.error
+          }
+        } else {
+          const res = await supabase
+            .from('mentors')
+            .select('*')
+            .eq('slug', slug)
+            .maybeSingle()
+          data = res.data
+          error = res.error
+
+          // Fallback: If not found by exact slug, resolve by id or prefix match
+          if (!data && !error && slug) {
+            const currentSlug = slug
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentSlug)
+            let fallbackQuery = supabase.from('mentors').select('*')
+            if (isUuid) {
+              fallbackQuery = fallbackQuery.or(`id.eq.${currentSlug},slug.ilike.${currentSlug}-%`)
+            } else {
+              fallbackQuery = fallbackQuery.ilike('slug', `${currentSlug}-%`)
+            }
+            const { data: fallbackData } = await fallbackQuery
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+
+            if (fallbackData) {
+              data = fallbackData
+            }
+          }
+        }
 
         if (error) {
           console.error('[MentorProfile] Supabase error:', error)
@@ -49,6 +87,7 @@ export default function MentorProfile() {
         }
 
         if (!data) {
+          console.warn('[MentorProfile] Mentor not found for slug:', slug)
           navigate('/find-mentor', { replace: true })
           return
         }
@@ -98,8 +137,8 @@ export default function MentorProfile() {
         setMentor(mentor)
         if (mentor.services.length > 0) setSelectedService(mentor.services[0])
         
-        // Record profile view (with deduplication: 1 per visitor per hour)
-        recordProfileView(mentor.id).catch(err => {
+        // Record profile view via RPC (server-side deduplication, validation, counter increment)
+        recordProfileView(mentor.slug).catch(err => {
           console.error('[MentorProfile] Failed to record view:', err)
         })
       } catch (err) {

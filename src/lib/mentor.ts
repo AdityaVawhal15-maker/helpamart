@@ -45,12 +45,23 @@ export async function getMentorStats(mentorId: string): Promise<{
 }> {
   try {
     const now = new Date().toISOString()
+    const { data: { session } } = await supabase.auth.getSession()
+    let realId = mentorId
+    if (session?.user?.id) {
+      const { data: m } = await supabase
+        .from('mentors')
+        .select('id')
+        .or(mentorId && mentorId !== 'undefined' ? `id.eq.${mentorId},user_id.eq.${session.user.id}` : `user_id.eq.${session.user.id}`)
+        .maybeSingle()
+      if (m?.id) realId = m.id
+    }
+    if (!realId || realId === 'undefined') return { upcomingSessions: 0, completedSessions: 0, profileViews: 0 }
 
     // Upcoming sessions (confirmed only, not pending - future sessions)
     const { count: upcomingCount, error: upcomingError } = await supabase
       .from('bookings')
       .select('id', { count: 'exact' })
-      .eq('mentor_id', mentorId)
+      .eq('mentor_id', realId)
       .eq('status', 'confirmed')
       .gt('start_at', now)
 
@@ -60,7 +71,7 @@ export async function getMentorStats(mentorId: string): Promise<{
     const { count: completedCount, error: completedError } = await supabase
       .from('bookings')
       .select('id', { count: 'exact' })
-      .eq('mentor_id', mentorId)
+      .eq('mentor_id', realId)
       .eq('status', 'completed')
       .not('completed_at', 'is', null)
 
@@ -70,7 +81,7 @@ export async function getMentorStats(mentorId: string): Promise<{
     const { data: mentorData, error: mentorError } = await supabase
       .from('mentors')
       .select('profile_view_count')
-      .eq('id', mentorId)
+      .eq('id', realId)
       .maybeSingle()
 
     if (mentorError) throw mentorError
@@ -104,6 +115,18 @@ export interface MentorBooking {
 
 export async function getMentorBookings(mentorId: string): Promise<MentorBooking[]> {
   try {
+    const { data: { session } } = await supabase.auth.getSession()
+    let realId = mentorId
+    if (session?.user?.id) {
+      const { data: m } = await supabase
+        .from('mentors')
+        .select('id')
+        .or(mentorId && mentorId !== 'undefined' ? `id.eq.${mentorId},user_id.eq.${session.user.id}` : `user_id.eq.${session.user.id}`)
+        .maybeSingle()
+      if (m?.id) realId = m.id
+    }
+    if (!realId || realId === 'undefined') return []
+
     const { data: bookings, error } = await supabase
       .from('bookings')
       .select(`
@@ -117,7 +140,7 @@ export async function getMentorBookings(mentorId: string): Promise<MentorBooking
         meet_link,
         mentee:profiles(id, full_name)
       `)
-      .eq('mentor_id', mentorId)
+      .eq('mentor_id', realId)
       .order('start_at', { ascending: false })
 
     if (error) throw error
@@ -166,11 +189,19 @@ export interface MentorProfile {
 
 export async function getMentorProfile(mentorId: string): Promise<MentorProfile | null> {
   try {
-    const { data, error } = await supabase
-      .from('mentors')
-      .select('*')
-      .eq('id', mentorId)
-      .maybeSingle()
+    const { data: { session } } = await supabase.auth.getSession()
+    let query = supabase.from('mentors').select('*')
+    if (mentorId && session?.user?.id) {
+      query = query.or(`id.eq.${mentorId},user_id.eq.${session.user.id}`)
+    } else if (mentorId) {
+      query = query.eq('id', mentorId)
+    } else if (session?.user?.id) {
+      query = query.eq('user_id', session.user.id)
+    } else {
+      return null
+    }
+
+    const { data, error } = await query.maybeSingle()
 
     if (error) throw error
     if (!data) return null
@@ -202,86 +233,50 @@ export async function getMentorProfile(mentorId: string): Promise<MentorProfile 
 }
 
 // ─────────────────────────────────────────────────────────────────
-// RECORD Profile View (with deduplication: 1 view per visitor per hour)
+// RECORD Profile View (via RPC)
 // ─────────────────────────────────────────────────────────────────
+// Calls server-side record_mentor_profile_view() RPC function.
+// Server handles:
+//   - Mentor validation (published status)
+//   - Authenticated visitor deduplication (1 view per visitor per hour)
+//   - Visitor data fetching from profiles table
+//   - Atomic counter increment
+//   - Anonymous visitor tracking (no dedup in current version)
+//
+// Parameters:
+//   - mentorSlug: Mentor's unique slug (not ID, prevents ID fabrication)
+//
+// Returns:
+//   - true if view was recorded or already deduplicated within 1 hour
+//   - false on error (e.g., mentor not published, RPC failure)
 
-export async function recordProfileView(mentorId: string): Promise<boolean> {
+export async function recordProfileView(mentorSlug: string): Promise<boolean> {
   try {
-    const { data: { session } } = await supabase.auth.getSession()
-    const visitorId = session?.user?.id || null
+    const { data, error } = await supabase.rpc('record_mentor_profile_view', {
+      p_mentor_slug: mentorSlug,
+    })
 
-    // Check if visitor already viewed this mentor in the last hour
-    if (visitorId) {
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
-      const { data: recentView, error: checkError } = await supabase
-        .from('profile_views')
-        .select('id')
-        .eq('mentor_id', mentorId)
-        .eq('visitor_id', visitorId)
-        .gt('viewed_at', oneHourAgo)
-        .maybeSingle()
-
-      if (checkError) throw checkError
-
-      // Already viewed in last hour, don't record duplicate
-      if (recentView) {
-        return false
-      }
+    if (error) {
+      console.error('[Mentor] recordProfileView RPC error:', error)
+      return false
     }
 
-    // Get visitor info if authenticated
-    let visitorName: string | null = null
-    let visitorAvatarUrl: string | null = null
-
-    if (visitorId) {
-      try {
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('full_name, avatar_url')
-          .eq('id', visitorId)
-          .maybeSingle()
-
-        if (!profileError && profile) {
-          visitorName = profile.full_name
-          visitorAvatarUrl = profile.avatar_url
-        }
-      } catch {}
+    // RPC returns array with single result object: [{ success, view_id, error_message }]
+    if (!Array.isArray(data) || data.length === 0) {
+      console.error('[Mentor] recordProfileView: unexpected response format', data)
+      return false
     }
 
-    // Record the profile view
-    const { error: insertError } = await supabase
-      .from('profile_views')
-      .insert({
-        mentor_id: mentorId,
-        visitor_id: visitorId,
-        visitor_name: visitorName,
-        visitor_avatar_url: visitorAvatarUrl,
-        viewed_at: new Date().toISOString(),
-      })
-
-    if (insertError) throw insertError
-
-    // Increment mentor's profile_view_count
-    const { data: mentor, error: mentorFetchError } = await supabase
-      .from('mentors')
-      .select('profile_view_count')
-      .eq('id', mentorId)
-      .maybeSingle()
-
-    if (mentorFetchError) throw mentorFetchError
-
-    const newCount = (mentor?.profile_view_count || 0) + 1
-
-    const { error: updateError } = await supabase
-      .from('mentors')
-      .update({ profile_view_count: newCount })
-      .eq('id', mentorId)
-
-    if (updateError) throw updateError
+    const result = data[0]
+    if (!result.success) {
+      console.warn('[Mentor] recordProfileView RPC returned success=false:', result.error_message)
+      // Still return true if already deduplicated (not an error condition)
+      return true
+    }
 
     return true
   } catch (err) {
-    console.error('[Mentor] recordProfileView error:', err)
+    console.error('[Mentor] recordProfileView unexpected error:', err)
     return false
   }
 }
@@ -303,10 +298,22 @@ export async function getMentorProfileVisitors(
   limit: number = 20
 ): Promise<ProfileVisitor[]> {
   try {
+    const { data: { session } } = await supabase.auth.getSession()
+    let realId = mentorId
+    if (session?.user?.id) {
+      const { data: m } = await supabase
+        .from('mentors')
+        .select('id')
+        .or(mentorId && mentorId !== 'undefined' ? `id.eq.${mentorId},user_id.eq.${session.user.id}` : `user_id.eq.${session.user.id}`)
+        .maybeSingle()
+      if (m?.id) realId = m.id
+    }
+    if (!realId || realId === 'undefined') return []
+
     const { data, error } = await supabase
       .from('profile_views')
       .select('id, visitor_id, visitor_name, visitor_avatar_url, viewed_at')
-      .eq('mentor_id', mentorId)
+      .eq('mentor_id', realId)
       .order('viewed_at', { ascending: false })
       .limit(limit)
 
@@ -331,53 +338,39 @@ export async function getMentorProfileVisitors(
 
 export async function markBookingCompleted(bookingId: string): Promise<boolean> {
   try {
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-    if (sessionError || !session?.user?.id) {
-      throw new Error('Not authenticated')
-    }
+    // Call server-side RPC that enforces:
+    //   - Mentor ownership (user_id matches authenticated user)
+    //   - Booking not already completed (completed_at IS NULL)
+    //   - Booking not cancelled (status != 'cancelled')
+    //   - Session has ended (now() >= booking.end_at)
+    //
+    // All authorization checks are performed server-side; client-side
+    // verification is no longer needed (RPC replaces it).
+    
+    const { data, error } = await supabase.rpc('mark_booking_completed_by_mentor', {
+      p_booking_id: bookingId,
+    })
 
-    // Verify the booking belongs to the authenticated mentor
-    const { data: booking, error: fetchError } = await supabase
-      .from('bookings')
-      .select('mentor_id, status, completed_at')
-      .eq('id', bookingId)
-      .maybeSingle()
-
-    if (fetchError) throw fetchError
-    if (!booking) throw new Error('Booking not found')
-
-    // Verify mentor ownership through join
-    const { data: mentor, error: mentorError } = await supabase
-      .from('mentors')
-      .select('user_id')
-      .eq('id', booking.mentor_id)
-      .maybeSingle()
-
-    if (mentorError) throw mentorError
-    if (!mentor || mentor.user_id !== session.user.id) {
-      throw new Error('Unauthorized: cannot complete another mentor booking')
-    }
-
-    // Don't mark as completed twice
-    if (booking.status === 'completed' && booking.completed_at) {
+    if (error) {
+      console.error('[Mentor] markBookingCompleted RPC error:', error)
       return false
     }
 
-    // Mark as completed
-    const { error: updateError } = await supabase
-      .from('bookings')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', bookingId)
+    // RPC returns array with single result: [{ success, error_message }]
+    if (!Array.isArray(data) || data.length === 0) {
+      console.error('[Mentor] markBookingCompleted: unexpected response format', data)
+      return false
+    }
 
-    if (updateError) throw updateError
+    const result = data[0]
+    if (!result.success) {
+      console.warn('[Mentor] markBookingCompleted RPC returned success=false:', result.error_message)
+      return false
+    }
 
     return true
   } catch (err) {
-    console.error('[Mentor] markBookingCompleted error:', err)
+    console.error('[Mentor] markBookingCompleted unexpected error:', err)
     return false
   }
 }
@@ -410,11 +403,13 @@ export async function updateMentorProfile(
     }
 
     // Verify ownership: mentor.user_id must match authenticated user
-    const { data: existingMentor, error: fetchError } = await supabase
-      .from('mentors')
-      .select('user_id')
-      .eq('id', mentorId)
-      .maybeSingle()
+    let query = supabase.from('mentors').select('id, user_id')
+    if (mentorId && mentorId !== 'undefined') {
+      query = query.or(`id.eq.${mentorId},user_id.eq.${session.user.id}`)
+    } else {
+      query = query.eq('user_id', session.user.id)
+    }
+    const { data: existingMentor, error: fetchError } = await query.maybeSingle()
 
     if (fetchError) throw fetchError
     if (!existingMentor) throw new Error('Mentor not found')
@@ -441,7 +436,7 @@ export async function updateMentorProfile(
     const { data, error } = await supabase
       .from('mentors')
       .update(updateData)
-      .eq('id', mentorId)
+      .eq('id', existingMentor.id)
       .select('*')
       .maybeSingle()
 
@@ -489,11 +484,19 @@ export interface MentorService {
 
 export async function getMentorServices(mentorId: string): Promise<MentorService[]> {
   try {
-    const { data, error } = await supabase
-      .from('mentors')
-      .select('services')
-      .eq('id', mentorId)
-      .maybeSingle()
+    const { data: { session } } = await supabase.auth.getSession()
+    let query = supabase.from('mentors').select('services')
+    if (mentorId && mentorId !== 'undefined' && session?.user?.id) {
+      query = query.or(`id.eq.${mentorId},user_id.eq.${session.user.id}`)
+    } else if (mentorId && mentorId !== 'undefined') {
+      query = query.eq('id', mentorId)
+    } else if (session?.user?.id) {
+      query = query.eq('user_id', session.user.id)
+    } else {
+      return []
+    }
+
+    const { data, error } = await query.maybeSingle()
 
     if (error) throw error
     if (!data) return []
@@ -515,12 +518,14 @@ export async function updateMentorServices(
       throw new Error('Not authenticated')
     }
 
-    // Verify ownership
-    const { data: existingMentor, error: fetchError } = await supabase
-      .from('mentors')
-      .select('user_id')
-      .eq('id', mentorId)
-      .maybeSingle()
+    // Verify ownership and resolve canonical mentor
+    let query = supabase.from('mentors').select('id, user_id')
+    if (mentorId && mentorId !== 'undefined') {
+      query = query.or(`id.eq.${mentorId},user_id.eq.${session.user.id}`)
+    } else {
+      query = query.eq('user_id', session.user.id)
+    }
+    const { data: existingMentor, error: fetchError } = await query.maybeSingle()
 
     if (fetchError) throw fetchError
     if (!existingMentor) throw new Error('Mentor not found')
@@ -534,7 +539,7 @@ export async function updateMentorServices(
         services,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', mentorId)
+      .eq('id', existingMentor.id)
       .select('services')
       .maybeSingle()
 
@@ -564,11 +569,19 @@ export async function getMentorAvailability(mentorId: string): Promise<{
   timezone: string
 }> {
   try {
-    const { data, error } = await supabase
-      .from('mentors')
-      .select('availability, timezone')
-      .eq('id', mentorId)
-      .maybeSingle()
+    const { data: { session } } = await supabase.auth.getSession()
+    let query = supabase.from('mentors').select('availability, timezone')
+    if (mentorId && mentorId !== 'undefined' && session?.user?.id) {
+      query = query.or(`id.eq.${mentorId},user_id.eq.${session.user.id}`)
+    } else if (mentorId && mentorId !== 'undefined') {
+      query = query.eq('id', mentorId)
+    } else if (session?.user?.id) {
+      query = query.eq('user_id', session.user.id)
+    } else {
+      return { rules: [], timezone: 'UTC' }
+    }
+
+    const { data, error } = await query.maybeSingle()
 
     if (error) throw error
     if (!data) return { rules: [], timezone: 'UTC' }
@@ -594,12 +607,14 @@ export async function updateMentorAvailability(
       throw new Error('Not authenticated')
     }
 
-    // Verify ownership
-    const { data: existingMentor, error: fetchError } = await supabase
-      .from('mentors')
-      .select('user_id')
-      .eq('id', mentorId)
-      .maybeSingle()
+    // Verify ownership and resolve canonical mentor
+    let query = supabase.from('mentors').select('id, user_id')
+    if (mentorId && mentorId !== 'undefined') {
+      query = query.or(`id.eq.${mentorId},user_id.eq.${session.user.id}`)
+    } else {
+      query = query.eq('user_id', session.user.id)
+    }
+    const { data: existingMentor, error: fetchError } = await query.maybeSingle()
 
     if (fetchError) throw fetchError
     if (!existingMentor) throw new Error('Mentor not found')
@@ -614,7 +629,7 @@ export async function updateMentorAvailability(
         timezone,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', mentorId)
+      .eq('id', existingMentor.id)
       .select('availability, timezone')
       .maybeSingle()
 
