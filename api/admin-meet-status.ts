@@ -88,12 +88,71 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
 
     if (!tokenRes.ok) {
+      const errText = await tokenRes.text()
+      let isInvalidGrant = false
+      try {
+        const parsed = JSON.parse(errText)
+        if (
+          parsed.error === 'invalid_grant' ||
+          String(parsed.error_description || '').toLowerCase().includes('revoked') ||
+          String(parsed.error_description || '').toLowerCase().includes('expired')
+        ) {
+          isInvalidGrant = true
+        }
+      } catch {
+        if (errText.includes('invalid_grant')) isInvalidGrant = true
+      }
+
+      if (isInvalidGrant && source === 'db') {
+        try {
+          const db = adminSupabase()
+          await db
+            .from('google_service_connections')
+            .update({
+              status: 'disconnected',
+              updated_at: new Date().toISOString(),
+            })
+            .in('key', ['helpamart_meet', 'helpamart_organizer'])
+        } catch {
+          // Non-fatal
+        }
+      }
+
       return res.json({
         configured: false,
         reason: 'token_invalid',
         detail: `Google token refresh rejected (${tokenRes.status}). Re-authorization is required.`,
         source,
       })
+    }
+
+    const tokenData = (await tokenRes.json()) as {
+      access_token?: string
+      expires_in?: number
+      refresh_token?: string
+    }
+
+    if (source === 'db' && tokenData.access_token) {
+      try {
+        const db = adminSupabase()
+        const expiresInSec = typeof tokenData.expires_in === 'number' ? tokenData.expires_in : 3600
+        const expiryDate = new Date(Date.now() + Math.max(0, expiresInSec - 60) * 1000).toISOString()
+        const updatePayload: Record<string, any> = {
+          access_token: tokenData.access_token,
+          expiry: expiryDate,
+          status: 'connected',
+          updated_at: new Date().toISOString(),
+        }
+        if (tokenData.refresh_token) {
+          updatePayload.refresh_token = tokenData.refresh_token
+        }
+        await db
+          .from('google_service_connections')
+          .update(updatePayload)
+          .in('key', ['helpamart_meet', 'helpamart_organizer'])
+      } catch {
+        // Non-fatal
+      }
     }
 
     return res.json({

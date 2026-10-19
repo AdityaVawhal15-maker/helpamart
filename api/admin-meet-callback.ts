@@ -90,9 +90,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { tokens } = await oauth2Client.getToken(code)
     oauth2Client.setCredentials(tokens)
 
-    if (!tokens.refresh_token && !tokens.access_token) {
+    const db = adminSupabase()
+    let refreshTokenToSave = tokens.refresh_token || null
+
+    if (!refreshTokenToSave) {
+      // Check if existing DB connection has a working refresh token
+      const { data: existingConn } = await db
+        .from('google_service_connections')
+        .select('refresh_token, status')
+        .eq('key', 'helpamart_meet')
+        .maybeSingle()
+
+      if (existingConn?.refresh_token) {
+        try {
+          const testRes = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              client_id: process.env.GOOGLE_CLIENT_ID!,
+              client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+              refresh_token: existingConn.refresh_token,
+              grant_type: 'refresh_token',
+            }),
+          })
+          if (testRes.ok) {
+            refreshTokenToSave = existingConn.refresh_token
+          }
+        } catch {
+          // Token test failed
+        }
+      }
+    }
+
+    if (!refreshTokenToSave) {
+      console.error('[ADMIN MEET CB] Google did not return a refresh token and no valid refresh token exists in DB')
       return res.status(400).send(
-        'Google did not return tokens. Revoke access at https://myaccount.google.com/permissions and authorize again.',
+        'Google did not return a refresh token. To obtain a new refresh token, please visit https://myaccount.google.com/permissions, remove access for HELPAMART, and then reconnect from /admin/meet.',
       )
     }
 
@@ -101,7 +134,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data: userInfo } = await oauth2.userinfo.get()
     const accountEmail = userInfo.email || null
 
-    const db = adminSupabase()
     const expiry = tokens.expiry_date ? new Date(tokens.expiry_date).toISOString() : null
     const now = new Date().toISOString()
 
@@ -110,12 +142,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       provider: 'google',
       account_email: accountEmail,
       access_token: tokens.access_token ?? null,
+      refresh_token: refreshTokenToSave,
       expiry,
       status: 'connected',
       updated_at: now,
-    }
-    if (tokens.refresh_token) {
-      upsertPayload.refresh_token = tokens.refresh_token
     }
 
     // Upsert primary key 'helpamart_meet'

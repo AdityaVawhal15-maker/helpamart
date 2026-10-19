@@ -71,6 +71,8 @@ async function getCentralMeetCredentials(db: ReturnType<typeof adminSupabase>): 
   clientId: string
   clientSecret: string
   refreshToken: string
+  cachedAccessToken?: string | null
+  connectionKey?: string
 } | null> {
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
@@ -81,12 +83,14 @@ async function getCentralMeetCredentials(db: ReturnType<typeof adminSupabase>): 
   }
 
   let refreshToken: string | null = null
+  let cachedAccessToken: string | null = null
+  let connectionKey = 'helpamart_meet'
 
   // 1. Try DB (authoritative)
   try {
     const { data: conn, error: dbErr } = await db
       .from('google_service_connections')
-      .select('refresh_token, status, account_email')
+      .select('key, refresh_token, access_token, expiry, status, account_email')
       .in('key', ['helpamart_meet', 'helpamart_organizer'])
       .eq('status', 'connected')
       .order('updated_at', { ascending: false })
@@ -99,7 +103,18 @@ async function getCentralMeetCredentials(db: ReturnType<typeof adminSupabase>): 
 
     if (conn?.status === 'connected' && conn.refresh_token) {
       refreshToken = conn.refresh_token
-      console.log(`[FINALIZE] Central Google Meet token resolved from DB (account: ${conn.account_email || 'unknown'})`)
+      connectionKey = conn.key || 'helpamart_meet'
+      console.log(`[FINALIZE] Central Google Meet token resolved from DB (account: ${conn.account_email || 'unknown'}, key: ${connectionKey})`)
+
+      // Check if access_token in DB is still valid (with 5 min safety buffer)
+      if (conn.access_token && conn.expiry) {
+        const expiryMs = new Date(conn.expiry).getTime()
+        const bufferMs = 5 * 60 * 1000 // 5 minutes
+        if (!isNaN(expiryMs) && expiryMs > Date.now() + bufferMs) {
+          cachedAccessToken = conn.access_token
+          console.log('[FINALIZE] Active valid Google access token found in DB cache (expires:', conn.expiry, ')')
+        }
+      }
     }
   } catch (e: any) {
     console.error(`[FINALIZE] google_service_connections lookup failed: ${e?.message}`)
@@ -119,15 +134,25 @@ async function getCentralMeetCredentials(db: ReturnType<typeof adminSupabase>): 
     return null
   }
 
-  return { clientId, clientSecret, refreshToken }
+  return { clientId, clientSecret, refreshToken, cachedAccessToken, connectionKey }
 }
 
 // ─── Generate Google access token from refresh token ──────────────────────────
-async function getGoogleAccessToken(creds: {
-  clientId: string
-  clientSecret: string
-  refreshToken: string
-}): Promise<string> {
+async function getGoogleAccessToken(
+  creds: {
+    clientId: string
+    clientSecret: string
+    refreshToken: string
+    cachedAccessToken?: string | null
+    connectionKey?: string
+  },
+  db?: ReturnType<typeof adminSupabase>
+): Promise<string> {
+  // If we have an active, valid cached access token, use it directly
+  if (creds.cachedAccessToken) {
+    return creds.cachedAccessToken
+  }
+
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -141,19 +166,87 @@ async function getGoogleAccessToken(creds: {
 
   if (!tokenRes.ok) {
     const errText = await tokenRes.text()
-    console.error('[FINALIZE] Google OAuth token refresh FAILED:', tokenRes.status, errText)
-    let detail = errText
-    try { detail = JSON.stringify(JSON.parse(errText)) } catch { /* raw text is fine */ }
-    throw new Error(`Google token refresh failed (HTTP ${tokenRes.status}): ${detail}`)
+    console.error('[FINALIZE] Google OAuth token refresh FAILED (HTTP', tokenRes.status, '):', errText)
+    
+    let isInvalidGrant = false
+    try {
+      const parsed = JSON.parse(errText)
+      if (
+        parsed.error === 'invalid_grant' ||
+        String(parsed.error_description || '').toLowerCase().includes('revoked') ||
+        String(parsed.error_description || '').toLowerCase().includes('expired')
+      ) {
+        isInvalidGrant = true
+      }
+    } catch {
+      if (errText.includes('invalid_grant')) isInvalidGrant = true
+    }
+
+    if (isInvalidGrant && db) {
+      console.warn('[FINALIZE] Refresh token is expired or revoked. Marking google_service_connections as disconnected in DB.')
+      try {
+        await db
+          .from('google_service_connections')
+          .update({
+            status: 'disconnected',
+            updated_at: new Date().toISOString(),
+          })
+          .in('key', ['helpamart_meet', 'helpamart_organizer'])
+      } catch (markErr: any) {
+        console.error('[FINALIZE] Failed to update connection status to disconnected:', markErr?.message)
+      }
+    }
+
+    const error = new Error(
+      isInvalidGrant
+        ? 'Google Meet authorization expired or revoked. Re-authorization is required at /admin/meet.'
+        : `Google token refresh failed (HTTP ${tokenRes.status})`
+    )
+    ;(error as any).isInvalidGrant = isInvalidGrant
+    throw error
   }
 
-  const tokenData = (await tokenRes.json()) as { access_token?: string; error?: string; error_description?: string }
+  const tokenData = (await tokenRes.json()) as {
+    access_token?: string
+    expires_in?: number
+    refresh_token?: string
+    error?: string
+    error_description?: string
+  }
+
   if (tokenData.error) {
     console.error('[FINALIZE] Google OAuth token error field:', tokenData.error, tokenData.error_description)
-    throw new Error(`Google token error: ${tokenData.error} — ${tokenData.error_description || 'no description'}`)
+    throw new Error(`Google token error: ${tokenData.error}`)
   }
   if (!tokenData.access_token) {
     throw new Error('Google token refresh returned no access_token.')
+  }
+
+  // Persist the newly acquired access_token, expiry, and any rotated refresh_token to DB
+  if (db) {
+    try {
+      const expiresInSec = typeof tokenData.expires_in === 'number' ? tokenData.expires_in : 3600
+      const expiryDate = new Date(Date.now() + Math.max(0, expiresInSec - 60) * 1000).toISOString()
+      const updatePayload: Record<string, any> = {
+        access_token: tokenData.access_token,
+        expiry: expiryDate,
+        status: 'connected',
+        updated_at: new Date().toISOString(),
+      }
+      if (tokenData.refresh_token) {
+        updatePayload.refresh_token = tokenData.refresh_token
+        console.log('[FINALIZE] Google issued rotated refresh_token; persisting to DB')
+      }
+
+      await db
+        .from('google_service_connections')
+        .update(updatePayload)
+        .in('key', ['helpamart_meet', 'helpamart_organizer'])
+
+      console.log('[FINALIZE] Cached fresh Google access token and expiry to DB')
+    } catch (saveErr: any) {
+      console.warn('[FINALIZE] Failed to cache access token in DB (non-fatal):', saveErr?.message)
+    }
   }
 
   return tokenData.access_token
@@ -526,7 +619,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!creds) {
         throw new Error('Google Meet credentials not configured in DB or environment. Please visit /admin/meet to connect.')
       }
-      const accessToken = await getGoogleAccessToken(creds)
+      const accessToken = await getGoogleAccessToken(creds, db)
       const meetSpace = await createGoogleMeetSpace(accessToken)
       meetUrl = meetSpace.meetingUri
       console.log('[FINALIZE] Google Meet created:', meetUrl.slice(0, 30) + '...')
@@ -637,7 +730,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     })
   } catch (err: any) {
-    console.error('[FINALIZE] Error:', err.message)
-    return res.status(500).json({ error: err?.message || 'Booking finalization failed.' })
+    console.error('[FINALIZE] Error:', err?.message || err)
+    const isAuthErr =
+      err?.isInvalidGrant ||
+      String(err?.message || '').toLowerCase().includes('authorization') ||
+      String(err?.message || '').toLowerCase().includes('token') ||
+      String(err?.message || '').toLowerCase().includes('google meet')
+    return res.status(500).json({
+      error: isAuthErr
+        ? 'We could not generate the Google Meet room for this session. Please try again in a few moments, or contact support.'
+        : (err?.message || 'Booking finalization failed.'),
+      hint: isAuthErr
+        ? 'Google Meet authorization expired. Please reconnect the central Google account at /admin/meet.'
+        : undefined,
+    })
   }
 }

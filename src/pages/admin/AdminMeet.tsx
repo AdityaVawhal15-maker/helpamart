@@ -36,7 +36,7 @@ export default function AdminMeet() {
     checkStatus()
   }, [])
 
-  const isConnected = justConnected || status?.configured === true
+  const isConnected = loading ? justConnected : status?.configured === true
   const displayEmail = connectedEmail || status?.accountEmail
 
   function handleConnect() {
