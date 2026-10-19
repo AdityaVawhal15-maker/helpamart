@@ -399,23 +399,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ error: 'Invalid start time.' })
       }
 
-      // STEP 6: Verify user is NOT first session (returning user)
-      const { count: prevBookings } = await db
+      // STEP 6: Authoritative per-mentor pricing verification
+      // Every mentor gets exactly ONE free session: their first eligible booking with their first student.
+      // After that mentor's first session is confirmed/completed, all subsequent sessions cost ₹99.
+      // If mentor has no confirmed or completed sessions, their first session is free and must be booked via free flow.
+      const { count: mentorConfirmedBookings } = await db
         .from('bookings')
         .select('id', { count: 'exact', head: true })
-        .eq('mentee_id', userId)
+        .eq('mentor_id', mentorRow.id)
         .in('status', ['confirmed', 'completed'])
-        .in('payment_status', ['not_required', 'completed'])
 
-      const isFirstSession = (prevBookings ?? 0) === 0
-      console.log('[CASHFREE] previous successful bookings count:', prevBookings ?? 0, 'isFirstSession:', isFirstSession)
+      const isFirstSessionForMentor = (mentorConfirmedBookings ?? 0) === 0
+      console.log('[CASHFREE] mentor confirmed bookings count:', mentorConfirmedBookings ?? 0, 'isFirstSessionForMentor:', isFirstSessionForMentor)
 
-      if (isFirstSession) {
-        console.log('[CASHFREE] REJECTED: First session is free')
-        return res.status(400).json({ error: 'First session is free. Use regular booking flow.' })
+      if (isFirstSessionForMentor) {
+        console.log('[CASHFREE] REJECTED: First session with this mentor is free')
+        return res.status(400).json({
+          error: 'Your first session with this mentor is free! Please use the complimentary booking flow.',
+          code: 'FIRST_SESSION_FREE',
+          isFirstSession: true,
+        })
       }
 
-      console.log('[CASHFREE] VERIFIED: Returning user (paid session allowed)')
+      console.log('[CASHFREE] VERIFIED: Mentor already completed first session (paid session of ₹99 required)')
 
       // STEP 7: Check if provisional booking already exists for this session (idempotency)
       // If user navigates back and restarts payment, reuse existing booking

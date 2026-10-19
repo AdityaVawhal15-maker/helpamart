@@ -365,7 +365,7 @@ async function sendMentorBookingEmail(opts: {
   const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
   const priceDisplay = opts.priceCents === 0
-    ? 'Free (first HELPAMART session)'
+    ? 'Free (first session with this mentor)'
     : `₹${Math.round(opts.priceCents / 100)}`
 
   const meetBlock = `
@@ -468,7 +468,7 @@ async function sendMenteeBookingEmail(opts: {
   const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
   const priceDisplay = opts.priceCents === 0
-    ? 'Free (first HELPAMART session)'
+    ? 'Free (first session with this mentor)'
     : `₹${Math.round(opts.priceCents / 100)}`
 
   const meetBlock = `
@@ -685,7 +685,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const dateStr = fmt(booking.start_at, booking.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
         const startTime = fmt(booking.start_at, booking.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
         const amountDisplay = priceCents === 0
-          ? 'Complimentary (first HELPAMART session)'
+          ? 'Complimentary (first session with this mentor)'
           : `₹${Math.round(priceCents / 100)}`
 
         const menteeNotificationMessage = `Your session with ${mentorName} is confirmed for ${dateStr} at ${startTime}. Service: ${booking.service_title || 'Mentorship Session'}. Amount: ${amountDisplay}. Click to join the Google Meet.`

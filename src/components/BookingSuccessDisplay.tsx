@@ -110,7 +110,7 @@ export default function BookingSuccessDisplay({
           transition={{ delay: 0.55, duration: 0.4 }}
           className="text-sm text-gold font-semibold mb-6"
         >
-          First session — complimentary ✦
+          First session with this mentor — complimentary ✦
         </motion.p>
       )}
 

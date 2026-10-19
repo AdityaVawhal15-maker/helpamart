@@ -44,7 +44,7 @@ const STEPS = [
 const FAQS = [
   {
     q: 'Is HELPAMART free to use?',
-    a: 'Browsing and discovering mentors is completely free. Your first session with any mentor is also free. If you want to continue, your second session is just ₹99.',
+    a: 'Browsing and discovering mentors is completely free. Your first session with a mentor is free. Every subsequent session with that mentor is ₹99.',
   },
   {
     q: 'How are mentors vetted?',

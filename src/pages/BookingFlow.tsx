@@ -76,30 +76,30 @@ export default function BookingFlow() {
     return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: timezone })
   }
 
-  // Determine first-session-free status from real booking history (platform-wide)
+  // Determine first-session-free status from server (authoritative per-mentor tracking)
   useEffect(() => {
-    if (!user) { setCheckingPrice(false); return }
     let cancelled = false
 
     async function checkSessionCount() {
       try {
-        // Query ALL successful bookings for this user across ALL mentors
-        if (!user) return
-        const { count } = await supabase
-          .from('bookings')
-          .select('id', { count: 'exact', head: true })
-          .eq('mentee_id', user.id)
-          .in('status', ['confirmed', 'completed'])
-          .in('payment_status', ['not_required', 'completed'])
-
-        if (!cancelled) {
-          const isFirst = (count ?? 0) === 0
-          setIsFirstSession(isFirst)
-          console.log('[BOOKING] Platform-wide first session check: isFirst=', isFirst, 'totalBookings=', count)
+        if (!slug) {
+          if (!cancelled) setCheckingPrice(false)
+          return
         }
+        const res = await fetch(`${API_BASE}/api/book?mentorSlug=${encodeURIComponent(slug)}`)
+        if (res.ok) {
+          const data = await res.json()
+          if (!cancelled) {
+            const isFirst = Boolean(data.isFirstSession)
+            setIsFirstSession(isFirst)
+            console.log('[BOOKING] Mentor authoritative first session check: isFirst=', isFirst)
+          }
+          return
+        }
+        if (!cancelled) setIsFirstSession(false)
       } catch (err) {
         console.error('[BOOKING] Session count error:', err)
-        if (!cancelled) setIsFirstSession(true)
+        if (!cancelled) setIsFirstSession(false)
       } finally {
         if (!cancelled) setCheckingPrice(false)
       }
@@ -107,7 +107,7 @@ export default function BookingFlow() {
 
     checkSessionCount()
     return () => { cancelled = true }
-  }, [user])
+  }, [slug])
 
   const displayPriceCents = isFirstSession === true ? 0 : (service.priceCents ?? 9900)
   const displayCurrency = service.currency || 'INR'
@@ -146,7 +146,14 @@ export default function BookingFlow() {
         const json = await res.json().catch(() => ({}))
 
         if (!res.ok) {
-          const errData = json as { error?: string }
+          const errData = json as { error?: string; code?: string }
+          if (errData?.code === 'FREE_SESSION_ALREADY_CLAIMED') {
+            setIsFirstSession(false)
+            setStep('confirm')
+            setSubmitting(false)
+            toast('The first free session for this mentor has been claimed. Every subsequent session with this mentor is ₹99.', 'error')
+            return
+          }
           throw new Error(errData.error || 'Failed to create free booking. Please try again.')
         }
 
@@ -183,7 +190,14 @@ export default function BookingFlow() {
       const json = await res.json().catch(() => ({}))
 
       if (!res.ok) {
-        const errData = json as { error?: string }
+        const errData = json as { error?: string; code?: string }
+        if (errData?.code === 'FIRST_SESSION_FREE') {
+          setIsFirstSession(true)
+          setStep('confirm')
+          setSubmitting(false)
+          toast('Your first session with this mentor is free. You can confirm your booking without payment.', 'success')
+          return
+        }
         throw new Error(errData.error || 'Failed to initiate payment. Please try again.')
       }
 
@@ -404,8 +418,10 @@ export default function BookingFlow() {
             <div className="flex justify-between items-center">
               <div>
                 <p className="text-xs text-grey font-medium uppercase tracking-wider">Total</p>
-                {isFirstSession === true && (
-                  <p className="text-[0.6875rem] text-gold mt-0.5">First session — complimentary</p>
+                {isFirstSession === true ? (
+                  <p className="text-[0.6875rem] text-gold mt-0.5">First session with this mentor — complimentary</p>
+                ) : (
+                  <p className="text-[0.6875rem] text-grey mt-0.5">Subsequent session with this mentor</p>
                 )}
               </div>
               {checkingPrice ? (

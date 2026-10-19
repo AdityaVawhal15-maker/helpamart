@@ -357,7 +357,7 @@ async function sendMentorBookingEmail(opts: {
   const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
   const priceDisplay = opts.priceCents === 0
-    ? 'Free (first HELPAMART session)'
+    ? 'Free (first session with this mentor)'
     : `₹${Math.round(opts.priceCents / 100)}`
 
   const meetBlock = `
@@ -460,7 +460,7 @@ async function sendMenteeBookingEmail(opts: {
   const dateStr = fmt(opts.startAt, opts.timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const startTime = fmt(opts.startAt, opts.timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
   const priceDisplay = opts.priceCents === 0
-    ? 'Free (first HELPAMART session)'
+    ? 'Free (first session with this mentor)'
     : `₹${Math.round(opts.priceCents / 100)}`
 
   const meetBlock = `
@@ -530,6 +530,11 @@ async function sendMenteeBookingEmail(opts: {
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', process.env.APP_URL || 'https://www.helpamart.com')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Idempotency-Key')
+  if (req.method === 'OPTIONS') return res.status(200).end()
+
   const missingEnv: string[] = []
   if (!process.env.SUPABASE_URL) missingEnv.push('SUPABASE_URL')
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) missingEnv.push('SUPABASE_SERVICE_ROLE_KEY')
@@ -540,6 +545,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(503).json({
       error: `Server misconfiguration: missing env vars: ${missingEnv.join(', ')}. Contact support.`,
     })
+  }
+
+  // ─── GET /api/book?mentorSlug=... (Server-authoritative price check) ───────
+  if (req.method === 'GET') {
+    const mentorSlug = (req.query.mentorSlug || req.query.slug) as string | undefined
+    if (!mentorSlug) {
+      return res.status(400).json({ error: 'mentorSlug query parameter is required.' })
+    }
+    const db = adminSupabase()
+
+    let { data: mentorRow } = await db
+      .from('mentors')
+      .select('id, name, slug, status')
+      .eq('slug', mentorSlug)
+      .eq('status', 'published')
+      .maybeSingle()
+
+    if (!mentorRow) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mentorSlug)
+      let fallbackQuery = db.from('mentors').select('id, name, slug, status').eq('status', 'published')
+      if (isUuid) {
+        fallbackQuery = fallbackQuery.or(`id.eq.${mentorSlug},slug.ilike.${mentorSlug}-%`)
+      } else {
+        fallbackQuery = fallbackQuery.ilike('slug', `${mentorSlug}-%`)
+      }
+      const { data: fallbackRow } = await fallbackQuery.order('created_at', { ascending: false }).limit(1).maybeSingle()
+      if (fallbackRow) mentorRow = fallbackRow
+    }
+
+    if (!mentorRow) {
+      return res.status(404).json({ error: 'Mentor not found.' })
+    }
+
+    // Authoritative per-mentor first session count:
+    // Only confirmed/completed sessions count towards consuming the mentor's free session.
+    // Cancelled, failed, or pending sessions do not consume the entitlement.
+    const { count: mentorConfirmedBookings } = await db
+      .from('bookings')
+      .select('id', { count: 'exact', head: true })
+      .eq('mentor_id', mentorRow.id)
+      .in('status', ['confirmed', 'completed'])
+
+    const isFirstSession = (mentorConfirmedBookings ?? 0) === 0
+    const priceCents = isFirstSession ? 0 : 9900
+
+    return res.status(200).json({
+      mentorId: mentorRow.id,
+      mentorSlug: mentorRow.slug,
+      mentorName: mentorRow.name,
+      isFirstSession,
+      priceCents,
+      currency: 'INR',
+    })
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed.' })
   }
 
   let bookingCreated = false
@@ -624,20 +686,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Invalid start time.' })
     }
 
-    // 4. Server-side first-session-on-HELPAMART price calculation
-    // IMPORTANT: First session is FREE for ANY user across ALL mentors on HELPAMART platform.
-    // NOT per-mentor. User's FIRST successful booking on HELPAMART is free.
-    const { count: totalSuccessfulBookings } = await db
+    // 4. Server-side authoritative per-mentor price calculation
+    // RULE: Every newly approved/registered mentor gets exactly ONE free session:
+    // their first eligible booking with their first student.
+    // After that mentor's first session is successfully confirmed/completed,
+    // all subsequent sessions with that mentor cost ₹99 (regardless of which student books).
+    const { count: mentorConfirmedBookings } = await db
       .from('bookings')
       .select('id', { count: 'exact', head: true })
-      .eq('mentee_id', userId)
+      .eq('mentor_id', mentorRow.id)
       .in('status', ['confirmed', 'completed'])
-      .in('payment_status', ['not_required', 'completed'])
 
-    const isFirstSessionOnHelpamart = (totalSuccessfulBookings ?? 0) === 0
-    const finalPriceCents = isFirstSessionOnHelpamart ? 0 : (service.priceCents ?? 9900)
-    const currency = service.currency || 'INR'
-    console.log('[BOOK] price calculated: isFirstSessionOnHelpamart=', isFirstSessionOnHelpamart, '| priceCents=', finalPriceCents, '| totalPreviousBookings=', totalSuccessfulBookings)
+    const isFirstSessionForMentor = (mentorConfirmedBookings ?? 0) === 0
+    const finalPriceCents = isFirstSessionForMentor ? 0 : 9900
+    const currency = 'INR'
+    console.log('[BOOK] price calculated: isFirstSessionForMentor=', isFirstSessionForMentor, '| priceCents=', finalPriceCents, '| mentorPreviousBookings=', mentorConfirmedBookings)
+
+    // POST /api/book is the free booking endpoint. If the mentor has already used their free session,
+    // reject and instruct the student to complete payment of ₹99.
+    if (!isFirstSessionForMentor) {
+      console.warn('[BOOK] REJECTED: Mentor has already used their free session. Mentor ID:', mentorRow.id)
+      return res.status(400).json({
+        error: 'The first free session for this mentor has already been claimed. Every subsequent session with this mentor is ₹99.',
+        code: 'FREE_SESSION_ALREADY_CLAIMED',
+        requiresPayment: true,
+        priceCents: 9900,
+      })
+    }
 
     // 5. Double-booking check
     const { data: clash } = await db
@@ -700,7 +775,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       start_at: start.toISOString(),
       end_at: end.toISOString(),
       timezone,
-      status: isFirstSessionOnHelpamart ? 'confirmed' : 'pending',
+      status: isFirstSessionForMentor ? 'confirmed' : 'pending',
       payment_status: finalPriceCents === 0 ? 'not_required' : 'pending',
       price_cents: finalPriceCents,
       currency,
@@ -715,6 +790,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (insertErr) {
       console.error('[BOOK] booking INSERT failed:', insertErr.message, '| code:', insertErr.code)
+      if (insertErr.code === '23505') {
+        return res.status(409).json({
+          error: 'The first free session for this mentor has just been claimed by another booking. Every subsequent session with this mentor is ₹99.',
+          code: 'FREE_SESSION_ALREADY_CLAIMED',
+          requiresPayment: true,
+          priceCents: 9900,
+        })
+      }
       return res.status(500).json({ error: `Could not create booking: ${insertErr.message}` })
     }
     bookingCreated = true
@@ -853,7 +936,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const dateStr = fmt(start.toISOString(), timezone, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
       const startTime = fmt(start.toISOString(), timezone, { hour: '2-digit', minute: '2-digit', hour12: true })
       const amountDisplay = finalPriceCents === 0
-        ? 'Complimentary (first HELPAMART session)'
+        ? 'Complimentary (first session with this mentor)'
         : `₹${Math.round(finalPriceCents / 100)}`
 
       const menteeNotificationMessage = `Your session with ${mentorRow.name} is confirmed for ${dateStr} at ${startTime}. Service: ${service.title}. Amount: ${amountDisplay}. Click to join the Google Meet.`
@@ -901,10 +984,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         id: bookingId,
         meetUrl: realMeetUrl,
         meetLink: realMeetUrl,
-        status: isFirstSessionOnHelpamart ? 'confirmed' : 'pending',
+        status: isFirstSessionForMentor ? 'confirmed' : 'pending',
         priceCents: finalPriceCents,
         currency,
-        isFirstSession: isFirstSessionOnHelpamart,
+        isFirstSession: isFirstSessionForMentor,
         startAt: start.toISOString(),
         endAt: end.toISOString(),
         mentorName: mentorRow.name,

@@ -339,7 +339,7 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
   const inView = useInView(ref, { once: true })
 
   // All mentor cards show "First session free" per HELPAMART pricing model.
-  // The first session with any mentor is complimentary; subsequent sessions use the mentor's set price.
+  // Every mentor's first session is complimentary; subsequent sessions with that mentor are ₹99.
   // We derive the paid-session price for display on the profile page, not on discovery cards.
   const paidPrice = (() => {
     if (!Array.isArray(mentor.services) || mentor.services.length === 0) return null

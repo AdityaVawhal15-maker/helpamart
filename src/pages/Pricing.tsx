@@ -60,7 +60,7 @@ export default function Pricing() {
               </em>
             </h1>
             <p className="text-grey text-lg max-w-xl mx-auto leading-relaxed">
-              Your first mentoring session is on us. If you connect with your mentor and want to go further, your second session is just ₹99.
+              Your first session with a mentor is free. Every subsequent session with that mentor is ₹99.
             </p>
           </motion.div>
         </div>
@@ -98,7 +98,7 @@ export default function Pricing() {
                   </p>
                   <h2 className="text-xl font-display text-white mb-1">First Session</h2>
                   <p className="text-white/55 text-sm leading-relaxed max-w-xs">
-                    Meet your mentor. Ask what matters most. No commitment, no cost.
+                    Your first session with a mentor is free. Ask what matters most. No commitment, no cost.
                   </p>
 
                   {/* Trust badge */}
@@ -153,9 +153,9 @@ export default function Pricing() {
                     <span className="w-4 h-px bg-gold/50" />
                     Step 02
                   </p>
-                  <h2 className="text-xl font-display text-navy mb-1">Second Session</h2>
+                  <h2 className="text-xl font-display text-navy mb-1">Subsequent Sessions</h2>
                   <p className="text-grey text-sm leading-relaxed max-w-xs">
-                    Continue your journey. Go deeper with the same mentor.
+                    Every subsequent session with that mentor is ₹99. Continue your journey and go deeper.
                   </p>
 
                   {/* Trust badge */}
