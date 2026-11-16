@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 import { PhotoCropUpload } from '@/components/ui/PhotoCropUpload'
+import { StudentLanguagePreferences } from '@/components/ui/StudentLanguagePreferences'
 
 export default function DashboardProfile() {
   const { user, loading, refresh, updateUserProfile } = useAuth()
@@ -98,10 +99,15 @@ export default function DashboardProfile() {
             <button
               onClick={save}
               disabled={saving}
-              className="px-6 py-2.5 bg-navy text-white rounded-xl text-sm font-semibold hover:bg-navy-mid transition-all disabled:opacity-50 flex items-center gap-2"
+              className="px-6 py-2.5 bg-navy text-white rounded-xl text-sm font-semibold hover:bg-navy-mid transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
             >
               {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save Changes'}
             </button>
+          </div>
+
+          {/* Student Mentorship Language Preferences (Optional) */}
+          <div className="mt-8">
+            <StudentLanguagePreferences />
           </div>
         </motion.div>
       </div>

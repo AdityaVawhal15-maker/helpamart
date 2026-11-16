@@ -1,3 +1,5 @@
+import type { MentorLanguageEntry } from './i18n/catalogue'
+
 export type User = {
   id: string
   email: string | null
@@ -11,6 +13,8 @@ export type User = {
   interests: string[]
   title?: string
   company?: string
+  uiLanguage?: string
+  preferredMentorshipLanguages?: string[]
 }
 
 export type AvailabilityRule = {
@@ -42,6 +46,7 @@ export type Mentor = {
   about: string
   photoUrl: string | null
   languages: string[]
+  languageDetails?: MentorLanguageEntry[]
   yearsExperience: number | null
   linkedinUrl: string | null
   websiteUrl: string | null
@@ -84,4 +89,5 @@ export type Booking = {
   mentorPhoto?: string | null
   serviceTitle?: string
   menteeName?: string
+  sessionLanguage?: string
 }

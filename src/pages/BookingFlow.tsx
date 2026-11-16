@@ -5,6 +5,7 @@ import { ArrowLeft, Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
+import { useI18n } from '@/i18n'
 import { CashfreeCheckout } from '@/components/ui/CashfreeCheckout'
 import BookingSuccessDisplay from '@/components/BookingSuccessDisplay'
 import type { MentorService } from '@/types'
@@ -26,6 +27,7 @@ type BookingResult = {
   startAt: string
   endAt: string
   mentorName: string
+  sessionLanguage?: string
 }
 
 type Step = 'confirm' | 'payment' | 'processing' | 'done'
@@ -49,6 +51,7 @@ export default function BookingFlow() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { toast } = useToast()
+  const { t } = useI18n()
 
   const [step, setStep] = useState<Step>('confirm')
   const [booking, setBooking] = useState<BookingResult | null>(null)
@@ -56,6 +59,28 @@ export default function BookingFlow() {
   const [checkingPrice, setCheckingPrice] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [idempotencyKey] = useState(() => crypto.randomUUID())
+  const [mentorLanguages, setMentorLanguages] = useState<string[]>([])
+  const [sessionLanguage, setSessionLanguage] = useState<string>('English')
+
+  useEffect(() => {
+    if (!slug) return
+    supabase
+      .from('mentors')
+      .select('languages')
+      .eq('slug', slug)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.languages && Array.isArray(data.languages) && data.languages.length > 0) {
+          setMentorLanguages(data.languages)
+          const studentPref = user?.preferredMentorshipLanguages?.[0]
+          if (studentPref && data.languages.some((l: string) => l.toLowerCase() === studentPref.toLowerCase())) {
+            setSessionLanguage(studentPref)
+          } else {
+            setSessionLanguage(data.languages[0])
+          }
+        }
+      })
+  }, [slug, user])
 
   if (!state?.service || !state?.startAt) {
     navigate(`/mentor/${slug}`, { replace: true })
@@ -140,6 +165,7 @@ export default function BookingFlow() {
             serviceId: service.id,
             startAt,
             timezone,
+            sessionLanguage,
           }),
         })
 
@@ -163,8 +189,19 @@ export default function BookingFlow() {
           throw new Error('Google Meet room could not be created. Please try again.')
         }
 
+        if (result?.booking?.id && sessionLanguage) {
+          try {
+            await supabase
+              .from('bookings')
+              .update({ session_language: sessionLanguage })
+              .eq('id', result.booking.id)
+          } catch (e) {
+            console.warn('[BOOKING] session_language update note:', e)
+          }
+        }
+
         console.log('[BOOKING] Free booking created successfully:', result.booking.id)
-        setBooking({ ...result.booking, meetLink: meetUrl, meetUrl })
+        setBooking({ ...result.booking, meetLink: meetUrl, meetUrl, sessionLanguage })
         setStep('done')
         return
       }
@@ -184,6 +221,7 @@ export default function BookingFlow() {
           serviceId: service.id,
           startAt,
           timezone,
+          sessionLanguage,
         }),
       })
 
@@ -387,10 +425,10 @@ export default function BookingFlow() {
       <div className="max-w-md w-full">
         <button
           onClick={() => navigate(-1)}
-          className="flex items-center gap-2 text-sm text-grey hover:text-navy transition-colors mb-8 group"
+          className="flex items-center gap-2 text-sm text-grey hover:text-navy transition-colors mb-8 group cursor-pointer"
         >
           <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-0.5" />
-          Back
+          {t('booking.back')}
         </button>
 
         <motion.div
@@ -399,35 +437,60 @@ export default function BookingFlow() {
           transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
           className="bg-white rounded-3xl shadow-soft p-8"
         >
-          <h1 className="text-display-md font-display text-navy mb-1">Confirm your session</h1>
-          <p className="text-grey text-sm mb-8">Review the details below before booking.</p>
+          <h1 className="text-display-md font-display text-navy mb-1">{t('booking.title')}</h1>
+          <p className="text-grey text-sm mb-8">{t('booking.subtitle')}</p>
 
           <div className="bg-ivory-light rounded-2xl p-5 space-y-4 mb-8">
             <div>
-              <p className="text-xs text-grey font-medium uppercase tracking-wider mb-1">Session</p>
+              <p className="text-xs text-grey font-medium uppercase tracking-wider mb-1">{t('booking.session')}</p>
               <p className="font-semibold text-navy">{service.title}</p>
               <p className="text-sm text-grey mt-0.5">{service.durationMinutes} min · {service.format}</p>
             </div>
             <div className="h-px bg-grey-soft" />
             <div>
-              <p className="text-xs text-grey font-medium uppercase tracking-wider mb-1">Date &amp; Time</p>
+              <p className="text-xs text-grey font-medium uppercase tracking-wider mb-1">{t('booking.dateTime')}</p>
               <p className="font-semibold text-navy">{formatDate(start)}</p>
               <p className="text-sm text-grey mt-0.5">{formatTime(start)} – {formatTime(end)} · {timezone}</p>
             </div>
             <div className="h-px bg-grey-soft" />
+            <div>
+              <label htmlFor="session-language-select" className="text-xs text-grey font-medium uppercase tracking-wider block mb-1">
+                {t('booking.sessionLanguage')}
+              </label>
+              {mentorLanguages.length > 0 ? (
+                <select
+                  id="session-language-select"
+                  value={sessionLanguage}
+                  onChange={e => setSessionLanguage(e.target.value)}
+                  className="w-full text-sm bg-white border border-grey-soft rounded-xl px-3 py-2 text-navy font-nav font-medium outline-none focus:border-gold cursor-pointer"
+                >
+                  {mentorLanguages.map(l => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-sm font-semibold text-navy">English</p>
+              )}
+              <p className="text-[0.6875rem] text-grey mt-1">
+                {t('booking.sessionLanguageHint')}
+              </p>
+            </div>
+            <div className="h-px bg-grey-soft" />
             <div className="flex justify-between items-center">
               <div>
-                <p className="text-xs text-grey font-medium uppercase tracking-wider">Total</p>
+                <p className="text-xs text-grey font-medium uppercase tracking-wider">{t('booking.total')}</p>
                 {isFirstSession === true ? (
-                  <p className="text-[0.6875rem] text-gold mt-0.5">First session with this mentor — complimentary</p>
+                  <p className="text-[0.6875rem] text-gold mt-0.5">{t('booking.firstFreeNote')}</p>
                 ) : (
-                  <p className="text-[0.6875rem] text-grey mt-0.5">Subsequent session with this mentor</p>
+                  <p className="text-[0.6875rem] text-grey mt-0.5">{t('booking.subsequentNote')}</p>
                 )}
               </div>
               {checkingPrice ? (
                 <div className="flex items-center gap-1.5 text-grey text-sm">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Calculating…
+                  {t('booking.calculating')}
                 </div>
               ) : (
                 <p className="text-lg font-bold text-navy">
@@ -439,23 +502,22 @@ export default function BookingFlow() {
 
           <div className="bg-gold/8 border border-gold/20 rounded-xl p-4 mb-6">
             <p className="text-xs text-navy/70 leading-relaxed">
-              A Google Meet link will be generated automatically for your session.
-              Confirmation emails with the meeting link will be sent to both you and your mentor.
+              {t('booking.googleMeetNote')}
             </p>
           </div>
 
           <button
             onClick={confirmBooking}
             disabled={step === 'processing' || submitting || checkingPrice}
-            className="w-full py-4 bg-navy text-white rounded-xl font-semibold hover:bg-navy-mid transition-all hover:shadow-[0_6px_24px_rgba(7,26,53,0.2)] disabled:opacity-60 flex items-center justify-center gap-2"
+            className="w-full py-4 bg-navy text-white rounded-xl font-semibold hover:bg-navy-mid transition-all hover:shadow-[0_6px_24px_rgba(7,26,53,0.2)] disabled:opacity-60 flex items-center justify-center gap-2 cursor-pointer"
           >
             {step === 'processing' ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Confirming your session…
+                {t('booking.confirming')}
               </>
             ) : (
-              'Confirm Booking'
+              t('booking.confirmBtn')
             )}
           </button>
         </motion.div>

@@ -9,6 +9,12 @@ import {
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/ui/Toast'
 import { PhotoCropUpload } from '@/components/ui/PhotoCropUpload'
+import {
+  MentorshipLanguageSelector,
+  parseMentorLanguageEntries,
+  mentorLangEntriesToStringArray,
+} from '@/components/ui/MentorshipLanguageSelector'
+import type { MentorLanguageEntry } from '@/i18n/catalogue'
 
 const ease = [0.16, 1, 0.3, 1] as const
 
@@ -78,11 +84,6 @@ const BASE_SKILLS = [
   'Study Abroad', 'Interview Preparation', 'Leadership', 'Research', 'Writing',
   'Public Speaking', 'Cloud & DevOps', 'Cybersecurity', 'Python', 'JavaScript',
   'React', 'Machine Learning', 'System Design', 'Resume Teardown', 'Negotiation',
-]
-
-const LANGUAGES = [
-  'English', 'Hindi', 'Spanish', 'French', 'German', 'Portuguese', 'Arabic', 'Mandarin',
-  'Marathi', 'Gujarati', 'Punjabi', 'Marwadi', 'Kannada', 'Tamil', 'Telugu',
 ]
 
 const SERVICE_TEMPLATES = [
@@ -167,6 +168,9 @@ export default function BecomeMentor() {
   const [location, setLocation] = useState(mentor?.location ?? '')
   const [intro, setIntro] = useState(mentor?.intro ?? '')
   const [languages, setLanguages] = useState<string[]>(mentor?.languages ?? ['English'])
+  const [languageEntries, setLanguageEntries] = useState<MentorLanguageEntry[]>(() =>
+    parseMentorLanguageEntries(mentor?.languageDetails, mentor?.languages ?? ['English'])
+  )
   const [categories, setCategories] = useState<string[]>(mentor?.categories ?? [])
   const [skills, setSkills] = useState<string[]>(mentor?.skills ?? [])
   const [yearsExp, setYearsExp] = useState(mentor?.yearsExperience ?? 0)
@@ -182,6 +186,11 @@ export default function BecomeMentor() {
   const [publishing, setPublishing] = useState(false)
   const [publishResult, setPublishResult] = useState<{ slug: string } | null>(null)
 
+  function handleLanguageEntriesChange(newEntries: MentorLanguageEntry[]) {
+    setLanguageEntries(newEntries)
+    setLanguages(mentorLangEntriesToStringArray(newEntries))
+  }
+
   // Sync state when mentor data becomes available (e.g. returning mentor)
   useEffect(() => {
     if (mentor) {
@@ -192,7 +201,10 @@ export default function BecomeMentor() {
       if (mentor.location) setLocation(mentor.location)
       if (mentor.intro) setIntro(mentor.intro)
       if (mentor.about) setAbout(mentor.about)
-      if (mentor.languages?.length) setLanguages(mentor.languages)
+      if (mentor.languages?.length) {
+        setLanguages(mentor.languages)
+        setLanguageEntries(parseMentorLanguageEntries(mentor.languageDetails, mentor.languages))
+      }
       if (mentor.categories?.length) setCategories(mentor.categories)
       if (mentor.skills?.length) setSkills(mentor.skills)
       if (mentor.yearsExperience != null) setYearsExp(mentor.yearsExperience)
@@ -282,6 +294,7 @@ export default function BecomeMentor() {
         about,
         photoUrl: photoUrl || null,
         languages,
+        languageDetails: languageEntries,
         yearsExperience: yearsExp,
         linkedinUrl: linkedinUrl || null,
         websiteUrl: websiteUrl || null,
@@ -453,8 +466,8 @@ export default function BecomeMentor() {
                   setLocation={setLocation}
                   intro={intro}
                   setIntro={setIntro}
-                  languages={languages}
-                  setLanguages={setLanguages}
+                  languageEntries={languageEntries}
+                  onChangeLanguageEntries={handleLanguageEntriesChange}
                 />
               )}
 
@@ -589,7 +602,8 @@ export default function BecomeMentor() {
 // ─── STEP 01: INTRODUCE YOURSELF ──────────────────────────────────────────────
 function StepIntroduce({
   photoUrl, setPhotoUrl, fullName, setFullName, roleTitle, setRoleTitle,
-  company, setCompany, location, setLocation, intro, setIntro, languages, setLanguages
+  company, setCompany, location, setLocation, intro, setIntro,
+  languageEntries, onChangeLanguageEntries,
 }: {
   photoUrl: string; setPhotoUrl: (v: string) => void
   fullName: string; setFullName: (v: string) => void
@@ -597,48 +611,10 @@ function StepIntroduce({
   company: string; setCompany: (v: string) => void
   location: string; setLocation: (v: string) => void
   intro: string; setIntro: (v: string) => void
-  languages: string[]; setLanguages: (v: string[]) => void
+  languageEntries: MentorLanguageEntry[]
+  onChangeLanguageEntries: (entries: MentorLanguageEntry[]) => void
 }) {
-  const [otherActive, setOtherActive] = useState(false)
-  const [customInput, setCustomInput] = useState('')
-  const [inputError, setInputError] = useState('')
   const { toast } = useToast()
-
-  // Custom "Other" language handling
-  const handleToggleOther = () => {
-    if (otherActive) {
-      setOtherActive(false)
-      setCustomInput('')
-      setInputError('')
-    } else {
-      setOtherActive(true)
-    }
-  }
-
-  const handleAddCustomLanguage = () => {
-    const clean = customInput.trim()
-    if (!clean) {
-      setInputError('Please enter a language.')
-      toast('Please enter a language.', 'error')
-      return
-    }
-
-    const alreadyExists = languages.some(
-      l => l.toLowerCase() === clean.toLowerCase()
-    ) || LANGUAGES.some(
-      l => l.toLowerCase() === clean.toLowerCase()
-    )
-
-    if (alreadyExists) {
-      setInputError('This language has already been added.')
-      toast('This language has already been added.', 'error')
-      return
-    }
-
-    setLanguages([...languages, clean])
-    setCustomInput('')
-    setInputError('')
-  }
 
   return (
     <div className="space-y-6">
@@ -685,84 +661,12 @@ function StepIntroduce({
       </div>
 
       {/* Languages mentored in (MUST stay on Step 01) */}
-      <div className="bg-white p-5 rounded-2xl border border-grey-soft shadow-xs">
-        <label className="field-label mb-2">Languages you mentor in</label>
-        <p className="text-xs text-grey mb-3">Select the languages you feel comfortable having conversations in.</p>
-        <div className="flex flex-wrap gap-2">
-          {LANGUAGES.map(lang => (
-            <button
-              key={lang}
-              type="button"
-              onClick={() =>
-                setLanguages(
-                  languages.includes(lang)
-                    ? languages.filter(l => l !== lang)
-                    : [...languages, lang]
-                )
-              }
-              className={`pill text-xs cursor-pointer ${languages.includes(lang) ? 'pill-active' : ''}`}
-            >
-              {languages.includes(lang) ? '✓ ' : ''}{lang}
-            </button>
-          ))}
-
-          {/* Custom added languages */}
-          {languages.filter(l => !LANGUAGES.includes(l)).map(l => (
-            <button
-              key={l}
-              type="button"
-              onClick={() => setLanguages(languages.filter(lang => lang !== l))}
-              className="pill pill-active text-xs cursor-pointer"
-            >
-              ✓ {l}
-            </button>
-          ))}
-
-          {/* Other option */}
-          <button
-            type="button"
-            onClick={handleToggleOther}
-            className={`pill text-xs cursor-pointer ${otherActive ? 'pill-active' : ''}`}
-          >
-            {otherActive ? '✓ ' : ''}Other
-          </button>
-        </div>
-
-        {/* Small input field and Add button shown only when Other is selected */}
-        {otherActive && (
-          <div className="pt-3 max-w-sm">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={customInput}
-                onChange={e => {
-                  setCustomInput(e.target.value)
-                  if (inputError) setInputError('')
-                }}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    handleAddCustomLanguage()
-                  }
-                }}
-                placeholder="Enter your language"
-                className={`field-input text-xs flex-1 ${inputError ? 'border-rose-400' : ''}`}
-                autoFocus
-              />
-              <button
-                type="button"
-                onClick={handleAddCustomLanguage}
-                className="px-4 py-2 bg-navy text-white rounded-xl text-xs font-semibold hover:bg-navy-mid transition-colors cursor-pointer shrink-0"
-              >
-                Add
-              </button>
-            </div>
-            {inputError && (
-              <p className="text-xs text-rose-500 mt-1.5 font-medium">{inputError}</p>
-            )}
-          </div>
-        )}
-      </div>
+      <MentorshipLanguageSelector
+        value={languageEntries}
+        onChange={onChangeLanguageEntries}
+        label="Languages you mentor in"
+        description="Select the languages you feel comfortable having conversations in, along with your proficiency and communication preferences."
+      />
     </div>
   )
 }

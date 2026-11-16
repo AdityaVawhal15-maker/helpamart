@@ -13,6 +13,7 @@
  */
 
 import { supabase } from './supabase'
+import type { MentorLanguageEntry } from '@/i18n/catalogue'
 
 // ─────────────────────────────────────────────────────────────────
 // GET Mentor ID from User ID
@@ -182,6 +183,8 @@ export interface MentorProfile {
   services: any[]
   availability: any[]
   categories: string[]
+  languages?: string[]
+  languageDetails?: MentorLanguageEntry[]
   yearsExperience: number | null
   linkedinUrl: string | null
   websiteUrl: string | null
@@ -222,6 +225,8 @@ export async function getMentorProfile(mentorId: string): Promise<MentorProfile 
       services: Array.isArray(data.services) ? data.services : [],
       availability: Array.isArray(data.availability) ? data.availability : [],
       categories: Array.isArray(data.categories) ? data.categories : [],
+      languages: Array.isArray(data.languages) ? data.languages : [],
+      languageDetails: Array.isArray(data.language_details) ? data.language_details : undefined,
       yearsExperience: data.years_experience,
       linkedinUrl: data.linkedin_url,
       websiteUrl: data.website_url,
@@ -394,6 +399,8 @@ export async function updateMentorProfile(
     yearsExperience: number
     linkedinUrl: string
     websiteUrl: string
+    languages: string[]
+    languageDetails: MentorLanguageEntry[]
   }>
 ): Promise<MentorProfile | null> {
   try {
@@ -431,6 +438,8 @@ export async function updateMentorProfile(
     if (updates.yearsExperience !== undefined) updateData.years_experience = updates.yearsExperience
     if (updates.linkedinUrl !== undefined) updateData.linkedin_url = updates.linkedinUrl
     if (updates.websiteUrl !== undefined) updateData.website_url = updates.websiteUrl
+    if (updates.languages !== undefined) updateData.languages = updates.languages
+    if (updates.languageDetails !== undefined) updateData.language_details = updates.languageDetails
     updateData.updated_at = new Date().toISOString()
 
     const { data, error } = await supabase
@@ -459,6 +468,8 @@ export async function updateMentorProfile(
       services: Array.isArray(data.services) ? data.services : [],
       availability: Array.isArray(data.availability) ? data.availability : [],
       categories: Array.isArray(data.categories) ? data.categories : [],
+      languages: Array.isArray(data.languages) ? data.languages : [],
+      languageDetails: Array.isArray(data.language_details) ? data.language_details : undefined,
       yearsExperience: data.years_experience,
       linkedinUrl: data.linkedin_url,
       websiteUrl: data.website_url,
