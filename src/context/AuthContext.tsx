@@ -83,6 +83,10 @@ function buildUserFromAuth(sbUser: SupabaseUser, storedProfile?: Partial<User> |
       (Array.isArray(meta.interests) ? meta.interests : []),
     title: storedProfile?.title || meta.title || '',
     company: storedProfile?.company || meta.company || '',
+    uiLanguage: storedProfile?.uiLanguage || meta.ui_language || null,
+    preferredMentorshipLanguages:
+      storedProfile?.preferredMentorshipLanguages ||
+      (Array.isArray(meta.preferred_mentorship_languages) ? meta.preferred_mentorship_languages : []),
   }
 }
 
@@ -134,6 +138,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ...cachedProfile,
       name: dbProfile?.full_name || cachedProfile?.name,
       photoUrl: dbProfile?.avatar_url || cachedProfile?.photoUrl,
+      uiLanguage: dbProfile?.ui_language || cachedProfile?.uiLanguage,
+      preferredMentorshipLanguages: dbProfile?.preferred_mentorship_languages || cachedProfile?.preferredMentorshipLanguages,
     })
 
     // Upsert into public.profiles if table exists
@@ -193,6 +199,7 @@ function safeParseArray(val: unknown): any[] {
           about: data.about || '',
           photoUrl: data.photo_url || resolvedUser.photoUrl,
           languages: safeParseArray(data.languages).length > 0 ? safeParseArray(data.languages) : ['English'],
+          languageDetails: Array.isArray(data.language_details) ? data.language_details : undefined,
           yearsExperience: data.years_experience ?? null,
           linkedinUrl: data.linkedin_url || null,
           websiteUrl: data.website_url || null,
@@ -396,6 +403,8 @@ function safeParseArray(val: unknown): any[] {
           timezone: updated.timezone,
           languages: updated.languages,
           interests: updated.interests,
+          ui_language: updated.uiLanguage,
+          preferred_mentorship_languages: updated.preferredMentorshipLanguages,
         },
       })
     } catch (e) {
@@ -404,13 +413,20 @@ function safeParseArray(val: unknown): any[] {
 
     // 3. Upsert into public.profiles DB table if available
     try {
-      await supabase.from('profiles').upsert({
+      const profilePayload: Record<string, unknown> = {
         id: updated.id,
         full_name: updated.name,
         email: updated.email,
         avatar_url: updated.photoUrl,
         updated_at: new Date().toISOString(),
-      })
+      }
+      if (updated.uiLanguage !== undefined) {
+        profilePayload.ui_language = updated.uiLanguage
+      }
+      if (updated.preferredMentorshipLanguages !== undefined) {
+        profilePayload.preferred_mentorship_languages = updated.preferredMentorshipLanguages
+      }
+      await supabase.from('profiles').upsert(profilePayload)
     } catch {}
 
     setUser(updated)
@@ -557,6 +573,7 @@ function safeParseArray(val: unknown): any[] {
         about: merged.about,
         photo_url: merged.photoUrl,
         languages: merged.languages,
+        language_details: merged.languageDetails ?? null,
         years_experience: merged.yearsExperience,
         linkedin_url: merged.linkedinUrl,
         website_url: merged.websiteUrl,

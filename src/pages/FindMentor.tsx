@@ -5,6 +5,8 @@ import { Search, SlidersHorizontal, X, Users, ArrowRight, Star, Briefcase, Gradu
 import { supabase } from '@/lib/supabase'
 import { MentorCardSkeleton } from '@/components/ui/LoadingSkeleton'
 import { CATEGORIES } from '@/data/taxonomy'
+import { useI18n } from '@/i18n'
+import { ALL_MENTORSHIP_LANGUAGES, LANGUAGE_CATALOGUE } from '@/i18n/catalogue'
 import type { Mentor } from '@/types'
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
@@ -23,6 +25,7 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
 }
 
 export default function FindMentor() {
+  const { t } = useI18n()
   const [params, setParams] = useSearchParams()
   const [mentors, setMentors] = useState<Mentor[]>([])
   const [loading, setLoading] = useState(true)
@@ -34,6 +37,7 @@ export default function FindMentor() {
 
   const q = params.get('q') || ''
   const category = params.get('category') || ''
+  const lang = params.get('lang') || ''
 
   useEffect(() => {
     let cancelled = false
@@ -117,6 +121,27 @@ export default function FindMentor() {
           )
         }
 
+        // Client-side language filter (lang)
+        if (lang) {
+          const targetEntry = LANGUAGE_CATALOGUE.find(
+            l => l.code.toLowerCase() === lang.toLowerCase() || l.english.toLowerCase() === lang.toLowerCase()
+          )
+          const targetCodes = new Set([
+            lang.toLowerCase(),
+            targetEntry?.code.toLowerCase(),
+            targetEntry?.english.toLowerCase(),
+            targetEntry?.native.toLowerCase(),
+          ].filter(Boolean) as string[])
+
+          results = results.filter((m) => {
+            if (!Array.isArray(m.languages)) return false
+            return m.languages.some(ml => {
+              if (typeof ml !== 'string') return false
+              return targetCodes.has(ml.toLowerCase())
+            })
+          })
+        }
+
         setMentors(results)
       } catch (err: any) {
         if (cancelled) return
@@ -130,7 +155,7 @@ export default function FindMentor() {
 
     fetchMentors()
     return () => { cancelled = true }
-  }, [q, category])
+  }, [q, category, lang])
 
   const safeMentors = Array.isArray(mentors) ? mentors : []
 
@@ -154,6 +179,16 @@ export default function FindMentor() {
     setParams(next)
   }
 
+  function handleLanguage(selected: string) {
+    const next = new URLSearchParams(params)
+    if (!selected) {
+      next.delete('lang')
+    } else {
+      next.set('lang', selected)
+    }
+    setParams(next)
+  }
+
   function clearSearch() {
     setSearchInput('')
     const next = new URLSearchParams(params)
@@ -173,14 +208,13 @@ export default function FindMentor() {
           >
             <p className="text-xs font-bold tracking-[0.15em] text-gold uppercase mb-3 flex items-center gap-2">
               <span className="w-5 h-px bg-gold" />
-              Discover
+              {t('findMentor.discover')}
             </p>
-            <h1 className="text-display-xl font-display text-navy mb-3">
-              Find the person<br />
-              who can move you forward.
+            <h1 className="text-display-xl font-display text-navy mb-3 whitespace-pre-line">
+              {t('findMentor.headline')}
             </h1>
             <p className="text-grey text-base mb-10 max-w-lg">
-              Not just someone who knows. Someone who has been there.
+              {t('findMentor.subheadline')}
             </p>
 
             {/* Search */}
@@ -191,7 +225,7 @@ export default function FindMentor() {
                   ref={searchRef}
                   value={searchInput}
                   onChange={e => setSearchInput(e.target.value)}
-                  placeholder="What are you trying to figure out?"
+                  placeholder={t('findMentor.searchPlaceholder')}
                   className="flex-1 px-4 py-4 text-base text-navy placeholder-grey bg-transparent outline-none"
                   aria-label="Search mentors"
                 />
@@ -209,7 +243,7 @@ export default function FindMentor() {
                   type="submit"
                   className="m-2 bg-navy text-white px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-navy-mid transition-colors shrink-0"
                 >
-                  Search
+                  {t('findMentor.searchBtn')}
                 </button>
               </div>
             </form>
@@ -217,7 +251,7 @@ export default function FindMentor() {
             {/* Search examples */}
             {!q && (
               <div className="flex flex-wrap gap-2 mt-3">
-                <span className="text-xs text-grey">Try:</span>
+                <span className="text-xs text-grey">{t('findMentor.trySearching')}</span>
                 {['Career change', 'Interview prep', 'Starting a company', 'Learning AI', 'Study abroad'].map(ex => (
                   <button
                     key={ex}
@@ -244,13 +278,25 @@ export default function FindMentor() {
         <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-3 overflow-x-auto no-scrollbar">
           <button
             onClick={() => setShowFilters(v => !v)}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium border transition-all shrink-0 ${
-              showFilters ? 'border-navy bg-navy text-white' : 'border-grey-soft bg-white text-navy hover:border-navy/30'
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium border transition-all shrink-0 cursor-pointer ${
+              showFilters || lang ? 'border-navy bg-navy text-white' : 'border-grey-soft bg-white text-navy hover:border-navy/30'
             }`}
           >
             <SlidersHorizontal className="h-4 w-4" />
-            Filters
+            {t('findMentor.filters')}
+            {lang && <span className="w-1.5 h-1.5 rounded-full bg-gold inline-block" />}
           </button>
+
+          {lang && (
+            <button
+              onClick={() => handleLanguage('')}
+              className="pill pill-active shrink-0 flex items-center gap-1.5 cursor-pointer"
+              title="Clear language filter"
+            >
+              <span>🗣️ {LANGUAGE_CATALOGUE.find(l => l.code === lang || l.english.toLowerCase() === lang.toLowerCase())?.english || lang}</span>
+              <X className="h-3 w-3" />
+            </button>
+          )}
 
           <div className="w-px h-5 bg-grey-soft shrink-0" />
 
@@ -258,7 +304,7 @@ export default function FindMentor() {
             onClick={() => handleCategory('')}
             className={`pill shrink-0 ${!activeCategory ? 'pill-active' : ''}`}
           >
-            All
+            {t('findMentor.all')}
           </button>
           {CATEGORIES.map(cat => (
             <button
@@ -273,6 +319,46 @@ export default function FindMentor() {
             </button>
           ))}
         </div>
+
+        {/* Expandable filter tray */}
+        <AnimatePresence>
+          {showFilters && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="border-t border-grey-soft bg-white px-6 py-3"
+            >
+              <div className="max-w-7xl mx-auto flex flex-wrap items-center gap-3">
+                <span className="text-xs font-semibold text-navy font-nav">
+                  {t('findMentor.mentorshipLanguage')}:
+                </span>
+                <select
+                  value={lang}
+                  onChange={e => handleLanguage(e.target.value)}
+                  className="text-xs bg-ivory-dark border border-grey-soft rounded-xl px-3 py-1.5 text-navy font-nav font-medium outline-none focus:border-gold cursor-pointer"
+                >
+                  <option value="">{t('findMentor.anyLanguage')}</option>
+                  {ALL_MENTORSHIP_LANGUAGES.map(l => (
+                    <option key={l.code} value={l.code}>
+                      {l.english} ({l.native})
+                    </option>
+                  ))}
+                </select>
+                {lang && (
+                  <button
+                    type="button"
+                    onClick={() => handleLanguage('')}
+                    className="text-xs text-maroon hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <X className="h-3 w-3" /> Clear language
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Results */}
@@ -281,18 +367,23 @@ export default function FindMentor() {
         {!loading && !fetchError && (
           <div className="flex items-center gap-3 mb-6">
             <p className="text-sm text-grey">
-              {safeMentors.length === 0 ? 'No mentors found' : `${safeMentors.length} mentor${safeMentors.length !== 1 ? 's' : ''}`}
-              {q ? ` for "${q}"` : ''}
-              {activeCategory ? ` in ${activeCategory}` : ''}
+              {safeMentors.length === 0
+                ? t('findMentor.noMentors')
+                : safeMentors.length === 1
+                  ? t('findMentor.mentorCount', { count: 1 })
+                  : t('findMentor.mentorCountPlural', { count: safeMentors.length })}
+              {q ? ` ${t('findMentor.for')} "${q}"` : ''}
+              {activeCategory ? ` ${t('findMentor.in')} ${activeCategory}` : ''}
+              {lang ? ` (${LANGUAGE_CATALOGUE.find(l => l.code === lang || l.english.toLowerCase() === lang.toLowerCase())?.english || lang})` : ''}
             </p>
-            {(q || activeCategory) && (
+            {(q || activeCategory || lang) && (
               <button
                 onClick={() => {
                   setSearchInput('')
                   setActiveCategory('')
                   setParams({})
                 }}
-                className="text-xs text-maroon hover:underline flex items-center gap-1"
+                className="text-xs text-maroon hover:underline flex items-center gap-1 cursor-pointer"
               >
                 <X className="h-3 w-3" /> Clear all
               </button>
@@ -335,6 +426,7 @@ export default function FindMentor() {
 }
 
 function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
+  const { t } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const inView = useInView(ref, { once: true })
 
@@ -423,12 +515,16 @@ function MentorCard({ mentor, index }: { mentor: Mentor; index: number }) {
 
           {/* Languages */}
           {Array.isArray(mentor?.languages) && mentor.languages.length > 0 && (
-            <p className="text-xs text-grey mt-2">{mentor.languages.slice(0, 2).join(' · ')}</p>
+            <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] font-medium text-navy/70 bg-navy/[0.04] px-2 py-0.5 rounded-md">
+                🗣️ {mentor.languages.slice(0, 3).join(', ')}{mentor.languages.length > 3 ? ` +${mentor.languages.length - 3}` : ''}
+              </span>
+            </div>
           )}
 
           {/* Footer */}
           <div className="flex items-center justify-between mt-4 pt-4 border-t border-grey-soft">
-            <span className="text-sm font-semibold text-gold">First session free</span>
+            <span className="text-sm font-semibold text-gold">{t('home.firstSessionFree')}</span>
             <span className="inline-flex items-center gap-1 text-sm font-medium text-navy group-hover:text-gold transition-colors">
               View Profile
               <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />

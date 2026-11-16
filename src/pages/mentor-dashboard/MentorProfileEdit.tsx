@@ -7,6 +7,11 @@ import { useToast } from '@/components/ui/Toast'
 import { PhotoCropUpload } from '@/components/ui/PhotoCropUpload'
 import { CATEGORIES } from '@/data/taxonomy'
 import { getMentorProfile, updateMentorProfile } from '@/lib/mentor'
+import {
+  MentorshipLanguageSelector,
+  parseMentorLanguageEntries,
+  mentorLangEntriesToStringArray,
+} from '@/components/ui/MentorshipLanguageSelector'
 
 export default function MentorProfileEdit() {
   const { user, mentor, loading: authLoading } = useAuth()
@@ -27,6 +32,7 @@ export default function MentorProfileEdit() {
     photoUrl: mentor?.photoUrl ?? '',
     yearsExperience: mentor?.yearsExperience ?? 0,
     categories: mentor?.categories ?? [] as string[],
+    languageEntries: parseMentorLanguageEntries(mentor?.languageDetails, mentor?.languages ?? ['English']),
   })
 
   useEffect(() => {
@@ -50,6 +56,7 @@ export default function MentorProfileEdit() {
             photoUrl: profile.photoUrl ?? '',
             yearsExperience: profile.yearsExperience ?? 0,
             categories: profile.categories ?? [],
+            languageEntries: parseMentorLanguageEntries(profile.languageDetails, profile.languages),
           })
         }
       })
@@ -86,6 +93,8 @@ export default function MentorProfileEdit() {
         photoUrl: form.photoUrl || undefined,
         yearsExperience: form.yearsExperience,
         categories: form.categories,
+        languages: mentorLangEntriesToStringArray(form.languageEntries),
+        languageDetails: form.languageEntries,
       })
       toast('Profile updated!', 'success')
     } catch (e: unknown) {
@@ -156,6 +165,14 @@ export default function MentorProfileEdit() {
                 ))}
               </div>
             </div>
+
+            <MentorshipLanguageSelector
+              value={form.languageEntries}
+              onChange={entries => set('languageEntries', entries)}
+              disabled={saving}
+              label="Languages You Mentor In"
+              description="Configure all languages you are comfortable conducting sessions in, along with your proficiency level."
+            />
 
             <button
               onClick={save}
