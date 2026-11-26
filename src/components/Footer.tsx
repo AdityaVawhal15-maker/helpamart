@@ -33,7 +33,7 @@ const HELPAMART_LINKS = [
 
 const LEGAL_LINKS = [
   { label: 'Privacy Policy', to: '/' },
-  { label: 'Terms of Service', to: '/' },
+  { label: 'Terms of Service', to: '/terms-and-conditions' },
   { label: 'Safety & Guidelines', to: '/' },
 ]
 
@@ -444,7 +444,7 @@ export default function Footer() {
               <span className="text-white/20">·</span>
               <Link to="/" className="hover:text-gold transition-colors">Privacy</Link>
               <span className="text-white/20">·</span>
-              <Link to="/" className="hover:text-gold transition-colors">Terms</Link>
+              <Link to="/terms-and-conditions" className="hover:text-gold transition-colors">Terms</Link>
             </div>
           </div>
         </div>

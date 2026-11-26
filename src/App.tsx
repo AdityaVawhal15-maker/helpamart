@@ -13,6 +13,7 @@ const OfferHelp = lazy(() => import('@/pages/OfferHelp'))
 const BookingFlow = lazy(() => import('@/pages/BookingFlow'))
 const BookingPaymentResult = lazy(() => import('@/pages/BookingPaymentResult'))
 const HowItWorks = lazy(() => import('@/pages/HowItWorks'))
+const TermsAndConditions = lazy(() => import('@/pages/TermsAndConditions'))
 const Community = lazy(() => import('@/pages/Community'))
 const CommunityPost = lazy(() => import('@/pages/CommunityPost'))
 const Stories = lazy(() => import('@/pages/Stories'))
@@ -74,6 +75,7 @@ export default function App() {
           <Route path="/mentor/:slug/book" element={<BookingFlow />} />
           <Route path="/booking-payment-result" element={<BookingPaymentResult />} />
           <Route path="/how-it-works" element={<HowItWorks />} />
+          <Route path="/terms-and-conditions" element={<TermsAndConditions />} />
           <Route path="/community" element={<Community />} />
           <Route path="/community/:id" element={<CommunityPost />} />
           <Route path="/stories" element={<Stories />} />
